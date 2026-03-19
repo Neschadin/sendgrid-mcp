@@ -115,13 +115,19 @@ export class SendGridClient {
     return this.request<Template>('GET', `/templates/${templateId}`);
   }
 
-  updateTemplate(templateId: string, params: UpdateTemplateParams): Promise<Template> {
+  updateTemplate(
+    templateId: string,
+    params: UpdateTemplateParams,
+  ): Promise<Template> {
     const body: Record<string, unknown> = {};
     if (params.name !== undefined) body['name'] = params.name;
     return this.request<Template>('PATCH', `/templates/${templateId}`, body);
   }
 
-  getTemplateVersion(templateId: string, versionId: string): Promise<TemplateVersion> {
+  getTemplateVersion(
+    templateId: string,
+    versionId: string,
+  ): Promise<TemplateVersion> {
     return this.request<TemplateVersion>(
       'GET',
       `/templates/${templateId}/versions/${versionId}`,
@@ -137,7 +143,12 @@ export class SendGridClient {
 
   createTemplateVersion(
     templateId: string,
-    params: { name: string; subject: string; htmlContent: string; active?: 0 | 1 },
+    params: {
+      name: string;
+      subject: string;
+      htmlContent: string;
+      active?: 0 | 1;
+    },
   ): Promise<TemplateVersion> {
     return this.request<TemplateVersion>(
       'POST',
@@ -156,12 +167,19 @@ export class SendGridClient {
   updateTemplateVersion(
     templateId: string,
     versionId: string,
-    params: Partial<{ name: string; subject: string; htmlContent: string; active: 0 | 1; testData: string }>,
+    params: Partial<{
+      name: string;
+      subject: string;
+      htmlContent: string;
+      active: 0 | 1;
+      testData: string;
+    }>,
   ): Promise<TemplateVersion> {
     const body: Record<string, unknown> = {};
     if (params.name !== undefined) body['name'] = params.name;
     if (params.subject !== undefined) body['subject'] = params.subject;
-    if (params.htmlContent !== undefined) body['html_content'] = params.htmlContent;
+    if (params.htmlContent !== undefined)
+      body['html_content'] = params.htmlContent;
     if (params.active !== undefined) body['active'] = params.active;
     if (params.testData !== undefined) body['test_data'] = params.testData;
 
@@ -172,7 +190,10 @@ export class SendGridClient {
     );
   }
 
-  activateTemplateVersion(templateId: string, versionId: string): Promise<TemplateVersion> {
+  activateTemplateVersion(
+    templateId: string,
+    versionId: string,
+  ): Promise<TemplateVersion> {
     return this.request<TemplateVersion>(
       'POST',
       `/templates/${templateId}/versions/${versionId}/activate`,
@@ -223,10 +244,19 @@ export class SendGridClient {
   }> {
     const encoded = encodeURIComponent(email);
     const [bounces, blocks, unsubscribes, spam] = await Promise.allSettled([
-      this.request<SuppressionEntry[]>('GET', `/suppression/bounces/${encoded}`),
+      this.request<SuppressionEntry[]>(
+        'GET',
+        `/suppression/bounces/${encoded}`,
+      ),
       this.request<SuppressionEntry[]>('GET', `/suppression/blocks/${encoded}`),
-      this.request<SuppressionEntry[]>('GET', `/suppression/unsubscribes/${encoded}`),
-      this.request<SuppressionEntry[]>('GET', `/suppression/spam_reports/${encoded}`),
+      this.request<SuppressionEntry[]>(
+        'GET',
+        `/suppression/unsubscribes/${encoded}`,
+      ),
+      this.request<SuppressionEntry[]>(
+        'GET',
+        `/suppression/spam_reports/${encoded}`,
+      ),
     ]);
 
     const get = (r: PromiseSettledResult<SuppressionEntry[]>) =>
@@ -247,7 +277,10 @@ export class SendGridClient {
   }
 
   getStats(startDate: string, endDate?: string): Promise<GlobalStats[]> {
-    const params: Record<string, string> = { start_date: startDate, aggregated_by: 'day' };
+    const params: Record<string, string> = {
+      start_date: startDate,
+      aggregated_by: 'day',
+    };
     if (endDate) params['end_date'] = endDate;
     return this.request<GlobalStats[]>('GET', '/stats', undefined, params);
   }

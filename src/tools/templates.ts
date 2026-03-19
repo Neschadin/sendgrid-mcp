@@ -2,7 +2,10 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SendGridClient } from '../client';
 
-export function registerTemplateTools(server: McpServer, client: SendGridClient) {
+export function registerTemplateTools(
+  server: McpServer,
+  client: SendGridClient,
+) {
   const TemplateName = z
     .string()
     .min(1)
@@ -12,7 +15,8 @@ export function registerTemplateTools(server: McpServer, client: SendGridClient)
   server.registerTool(
     'list_templates',
     {
-      description: 'List all dynamic SendGrid templates with their IDs, names, and version counts',
+      description:
+        'List all dynamic SendGrid templates with their IDs, names, and version counts',
       inputSchema: {},
     },
     async () => {
@@ -38,14 +42,17 @@ export function registerTemplateTools(server: McpServer, client: SendGridClient)
   server.registerTool(
     'rename_template',
     {
-      description: 'Rename a dynamic template (updates the template name, not a version label)',
+      description:
+        'Rename a dynamic template (updates the template name, not a version label)',
       inputSchema: z.object({
         templateId: z.string().describe('Template ID, e.g. d-xxxxxxxxxxxxxxxx'),
         newName: TemplateName.describe('New template name'),
       }),
     },
     async ({ templateId, newName }) => {
-      const updated = await client.updateTemplate(templateId, { name: newName });
+      const updated = await client.updateTemplate(templateId, {
+        name: newName,
+      });
       return {
         content: [
           {
@@ -66,14 +73,25 @@ export function registerTemplateTools(server: McpServer, client: SendGridClient)
         renames: z
           .array(
             z.object({
-              templateId: z.string().optional().describe('Template ID to rename'),
-              oldName: z.string().optional().describe('Current template name to match'),
+              templateId: z
+                .string()
+                .optional()
+                .describe('Template ID to rename'),
+              oldName: z
+                .string()
+                .optional()
+                .describe('Current template name to match'),
               newName: TemplateName.describe('New template name'),
             }),
           )
           .min(1)
-          .describe('Rename operations. Provide templateId or oldName for each item.'),
-        dryRun: z.boolean().optional().describe('If true, only print planned changes'),
+          .describe(
+            'Rename operations. Provide templateId or oldName for each item.',
+          ),
+        dryRun: z
+          .boolean()
+          .optional()
+          .describe('If true, only print planned changes'),
         stopOnError: z
           .boolean()
           .optional()
@@ -100,8 +118,20 @@ export function registerTemplateTools(server: McpServer, client: SendGridClient)
 
       type PlanItem =
         | { kind: 'ok'; templateId: string; oldName: string; newName: string }
-        | { kind: 'skip'; reason: string; templateId?: string; oldName?: string; newName: string }
-        | { kind: 'error'; reason: string; templateId?: string; oldName?: string; newName: string };
+        | {
+            kind: 'skip';
+            reason: string;
+            templateId?: string;
+            oldName?: string;
+            newName: string;
+          }
+        | {
+            kind: 'error';
+            reason: string;
+            templateId?: string;
+            oldName?: string;
+            newName: string;
+          };
 
       const plan: PlanItem[] = [];
 
@@ -181,11 +211,18 @@ export function registerTemplateTools(server: McpServer, client: SendGridClient)
       const errCount = plan.filter((p) => p.kind === 'error').length;
 
       if (wantDryRun) {
-        lines.push(`🧪 Dry run. Planned: ok=${okCount}, skip=${skipCount}, error=${errCount}`);
+        lines.push(
+          `🧪 Dry run. Planned: ok=${okCount}, skip=${skipCount}, error=${errCount}`,
+        );
         for (const p of plan) {
-          if (p.kind === 'ok') lines.push(`- ✅ [${p.templateId}] "${p.oldName}" → "${p.newName}"`);
+          if (p.kind === 'ok')
+            lines.push(
+              `- ✅ [${p.templateId}] "${p.oldName}" → "${p.newName}"`,
+            );
           if (p.kind === 'skip')
-            lines.push(`- ⏭  [${p.templateId ?? '—'}] ${p.reason}: "${p.oldName ?? p.oldName ?? '—'}"`);
+            lines.push(
+              `- ⏭  [${p.templateId ?? '—'}] ${p.reason}: "${p.oldName ?? p.oldName ?? '—'}"`,
+            );
           if (p.kind === 'error')
             lines.push(
               `- ❌ ${p.reason} (templateId=${p.templateId ?? '—'}, oldName=${p.oldName ?? '—'}, newName="${p.newName}")`,
@@ -194,13 +231,21 @@ export function registerTemplateTools(server: McpServer, client: SendGridClient)
         return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
 
-      lines.push(`Executing renames: ok=${okCount}, skip=${skipCount}, error=${errCount}`);
+      lines.push(
+        `Executing renames: ok=${okCount}, skip=${skipCount}, error=${errCount}`,
+      );
 
-      const results: Array<{ templateId: string; status: 'renamed' | 'failed'; message: string }> = [];
+      const results: Array<{
+        templateId: string;
+        status: 'renamed' | 'failed';
+        message: string;
+      }> = [];
       for (const p of plan) {
         if (p.kind !== 'ok') continue;
         try {
-          const updated = await client.updateTemplate(p.templateId, { name: p.newName });
+          const updated = await client.updateTemplate(p.templateId, {
+            name: p.newName,
+          });
           results.push({
             templateId: updated.id,
             status: 'renamed',
@@ -208,17 +253,28 @@ export function registerTemplateTools(server: McpServer, client: SendGridClient)
           });
         } catch (e) {
           const msg = String(e);
-          results.push({ templateId: p.templateId, status: 'failed', message: msg });
+          results.push({
+            templateId: p.templateId,
+            status: 'failed',
+            message: msg,
+          });
           if (wantStopOnError) break;
         }
       }
 
       for (const r of results) {
-        lines.push(r.status === 'renamed' ? `- ✅ [${r.templateId}] ${r.message}` : `- ❌ [${r.templateId}] ${r.message}`);
+        lines.push(
+          r.status === 'renamed'
+            ? `- ✅ [${r.templateId}] ${r.message}`
+            : `- ❌ [${r.templateId}] ${r.message}`,
+        );
       }
 
       const failed = results.filter((r) => r.status === 'failed').length;
-      if (failed > 0) lines.push(`\nFailures: ${failed}. Re-run with dryRun=true to inspect plan.`);
+      if (failed > 0)
+        lines.push(
+          `\nFailures: ${failed}. Re-run with dryRun=true to inspect plan.`,
+        );
 
       return { content: [{ type: 'text', text: lines.join('\n') }] };
     },
@@ -227,7 +283,8 @@ export function registerTemplateTools(server: McpServer, client: SendGridClient)
   server.registerTool(
     'get_template_html',
     {
-      description: "Get full HTML content of a template's active (or specific) version",
+      description:
+        "Get full HTML content of a template's active (or specific) version",
       inputSchema: z.object({
         templateId: z.string().describe('Template ID, e.g. d-xxxxxxxxxxxxxxxx'),
         versionId: z
@@ -243,12 +300,22 @@ export function registerTemplateTools(server: McpServer, client: SendGridClient)
         const template = await client.getTemplate(templateId);
         const active = template.versions.find((v) => v.active === 1);
         if (!active) {
-          return { content: [{ type: 'text', text: `Template ${templateId} has no active version.` }] };
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `Template ${templateId} has no active version.`,
+              },
+            ],
+          };
         }
         resolvedVersionId = active.id;
       }
 
-      const version = await client.getTemplateVersion(templateId, resolvedVersionId);
+      const version = await client.getTemplateVersion(
+        templateId,
+        resolvedVersionId,
+      );
       return {
         content: [
           {
@@ -276,8 +343,12 @@ export function registerTemplateTools(server: McpServer, client: SendGridClient)
       inputSchema: z.object({
         name: z.string().describe('Template name, e.g. "listing.approved"'),
         versionName: z.string().describe('Version label, e.g. "v1"'),
-        subject: z.string().describe('Email subject line (supports Handlebars: {{var}})'),
-        htmlContent: z.string().describe('Full HTML body (supports Handlebars: {{var}})'),
+        subject: z
+          .string()
+          .describe('Email subject line (supports Handlebars: {{var}})'),
+        htmlContent: z
+          .string()
+          .describe('Full HTML body (supports Handlebars: {{var}})'),
       }),
     },
     async ({ name, versionName, subject, htmlContent }) => {
@@ -311,7 +382,8 @@ export function registerTemplateTools(server: McpServer, client: SendGridClient)
   server.registerTool(
     'update_template_html',
     {
-      description: 'Update the HTML, subject, or name of a specific template version',
+      description:
+        'Update the HTML, subject, or name of a specific template version',
       inputSchema: z.object({
         templateId: z.string().describe('Template ID'),
         versionId: z.string().describe('Version ID to update'),
@@ -321,11 +393,15 @@ export function registerTemplateTools(server: McpServer, client: SendGridClient)
       }),
     },
     async ({ templateId, versionId, htmlContent, subject, name }) => {
-      const version = await client.updateTemplateVersion(templateId, versionId, {
-        htmlContent,
-        subject,
-        name,
-      });
+      const version = await client.updateTemplateVersion(
+        templateId,
+        versionId,
+        {
+          htmlContent,
+          subject,
+          name,
+        },
+      );
       return {
         content: [
           {
@@ -348,7 +424,10 @@ export function registerTemplateTools(server: McpServer, client: SendGridClient)
       }),
     },
     async ({ templateId, versionId }) => {
-      const version = await client.activateTemplateVersion(templateId, versionId);
+      const version = await client.activateTemplateVersion(
+        templateId,
+        versionId,
+      );
       return {
         content: [
           {

@@ -50,9 +50,7 @@ export function registerSyncTools(server: McpServer, client: SendGridClient) {
 
       if (!(await file.exists())) {
         return {
-          content: [
-            { type: 'text', text: `❌ File not found: ${filePath}` },
-          ],
+          content: [{ type: 'text', text: `❌ File not found: ${filePath}` }],
         };
       }
 
@@ -62,7 +60,10 @@ export function registerSyncTools(server: McpServer, client: SendGridClient) {
       if (Object.keys(localMap).length === 0) {
         return {
           content: [
-            { type: 'text', text: `⚠️ Could not parse SENDGRID_TEMPLATES from ${filePath}` },
+            {
+              type: 'text',
+              text: `⚠️ Could not parse SENDGRID_TEMPLATES from ${filePath}`,
+            },
           ],
         };
       }
@@ -89,7 +90,9 @@ export function registerSyncTools(server: McpServer, client: SendGridClient) {
 
         const sgTemplate = sgById.get(id);
         if (!sgTemplate) {
-          rows.push(`🟡 NOT IN SG    '${key}': '${id}'  (ID not found in your SendGrid account)`);
+          rows.push(
+            `🟡 NOT IN SG    '${key}': '${id}'  (ID not found in your SendGrid account)`,
+          );
           missingCount++;
         } else {
           const active = sgTemplate.versions.find((v) => v.active === 1);
@@ -113,7 +116,10 @@ export function registerSyncTools(server: McpServer, client: SendGridClient) {
       ];
 
       if (unreferenced.length > 0) {
-        summary.push(``, `── Templates in SendGrid not referenced in constants ──`);
+        summary.push(
+          ``,
+          `── Templates in SendGrid not referenced in constants ──`,
+        );
         for (const t of unreferenced) {
           summary.push(`  [${t.id}] "${t.name}"`);
         }

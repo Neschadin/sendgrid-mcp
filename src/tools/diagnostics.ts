@@ -2,7 +2,10 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SendGridClient } from '../client';
 
-export function registerDiagnosticsTools(server: McpServer, client: SendGridClient) {
+export function registerDiagnosticsTools(
+  server: McpServer,
+  client: SendGridClient,
+) {
   server.registerTool(
     'check_suppression',
     {
@@ -22,7 +25,8 @@ export function registerDiagnosticsTools(server: McpServer, client: SendGridClie
         result.spamReported && '🔴 SPAM REPORTED',
       ].filter(Boolean);
 
-      const status = flags.length === 0 ? '✅ Clean — not suppressed' : flags.join('  ');
+      const status =
+        flags.length === 0 ? '✅ Clean — not suppressed' : flags.join('  ');
 
       const lines = [`Email: ${email}`, `Status: ${status}`, ``];
 
@@ -43,14 +47,19 @@ export function registerDiagnosticsTools(server: McpServer, client: SendGridClie
       description: 'Get global email delivery statistics for a date range',
       inputSchema: z.object({
         startDate: z.string().describe('Start date YYYY-MM-DD'),
-        endDate: z.string().optional().describe('End date YYYY-MM-DD (defaults to today)'),
+        endDate: z
+          .string()
+          .optional()
+          .describe('End date YYYY-MM-DD (defaults to today)'),
       }),
     },
     async ({ startDate, endDate }) => {
       const stats = await client.getStats(startDate, endDate);
 
       if (stats.length === 0) {
-        return { content: [{ type: 'text', text: 'No stats for the given range.' }] };
+        return {
+          content: [{ type: 'text', text: 'No stats for the given range.' }],
+        };
       }
 
       const rows = stats.map((day) => {

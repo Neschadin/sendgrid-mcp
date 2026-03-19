@@ -11,7 +11,8 @@ export function registerEmailTools(
   server.registerTool(
     'send_test_email',
     {
-      description: 'Send a test email using a template with mock data to a given address',
+      description:
+        'Send a test email using a template with mock data to a given address',
       inputSchema: z.object({
         to: z.string().email().describe('Recipient email for the test'),
         templateId: z.string().describe('Template ID, e.g. d-xxxxxxxxxxxxxxxx'),
@@ -20,7 +21,11 @@ export function registerEmailTools(
           .describe(
             'Mock dynamic template data as JSON, e.g. {"listingTitle":"Test Co","siteUrl":"https://kennitalan.is"}',
           ),
-        fromEmail: z.string().email().optional().describe('Override sender email'),
+        fromEmail: z
+          .string()
+          .email()
+          .optional()
+          .describe('Override sender email'),
         fromName: z.string().optional().describe('Override sender name'),
       }),
     },
