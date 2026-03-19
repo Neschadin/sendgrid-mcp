@@ -28,6 +28,10 @@ export interface TemplateListResponse {
   _metadata: { self: string; count: number; next?: string };
 }
 
+export interface UpdateTemplateParams {
+  name?: string;
+}
+
 export interface SendEmailParams {
   to: string;
   templateId: string;
@@ -109,6 +113,12 @@ export class SendGridClient {
 
   getTemplate(templateId: string): Promise<Template> {
     return this.request<Template>('GET', `/templates/${templateId}`);
+  }
+
+  updateTemplate(templateId: string, params: UpdateTemplateParams): Promise<Template> {
+    const body: Record<string, unknown> = {};
+    if (params.name !== undefined) body['name'] = params.name;
+    return this.request<Template>('PATCH', `/templates/${templateId}`, body);
   }
 
   getTemplateVersion(templateId: string, versionId: string): Promise<TemplateVersion> {

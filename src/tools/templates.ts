@@ -3,6 +3,12 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SendGridClient } from '../client';
 
 export function registerTemplateTools(server: McpServer, client: SendGridClient) {
+  const TemplateName = z
+    .string()
+    .min(1)
+    .max(100)
+    .describe('Template name (max 100 chars)');
+
   server.registerTool(
     'list_templates',
     {
@@ -26,6 +32,195 @@ export function registerTemplateTools(server: McpServer, client: SendGridClient)
           },
         ],
       };
+    },
+  );
+
+  server.registerTool(
+    'rename_template',
+    {
+      description: 'Rename a dynamic template (updates the template name, not a version label)',
+      inputSchema: z.object({
+        templateId: z.string().describe('Template ID, e.g. d-xxxxxxxxxxxxxxxx'),
+        newName: TemplateName.describe('New template name'),
+      }),
+    },
+    async ({ templateId, newName }) => {
+      const updated = await client.updateTemplate(templateId, { name: newName });
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `✅ Renamed template ${updated.id} → "${updated.name}" (updated: ${updated.updated_at})`,
+          },
+        ],
+      };
+    },
+  );
+
+  server.registerTool(
+    'rename_templates_bulk',
+    {
+      description:
+        'Bulk rename templates by ID and/or current name. Supports dry-run and stop-on-error.',
+      inputSchema: z.object({
+        renames: z
+          .array(
+            z.object({
+              templateId: z.string().optional().describe('Template ID to rename'),
+              oldName: z.string().optional().describe('Current template name to match'),
+              newName: TemplateName.describe('New template name'),
+            }),
+          )
+          .min(1)
+          .describe('Rename operations. Provide templateId or oldName for each item.'),
+        dryRun: z.boolean().optional().describe('If true, only print planned changes'),
+        stopOnError: z
+          .boolean()
+          .optional()
+          .describe('If true, stop after the first failed rename'),
+        requireUniqueOldName: z
+          .boolean()
+          .optional()
+          .describe('If true, oldName must match exactly one template'),
+      }),
+    },
+    async ({ renames, dryRun, stopOnError, requireUniqueOldName }) => {
+      const wantDryRun = dryRun ?? false;
+      const wantStopOnError = stopOnError ?? false;
+      const wantRequireUnique = requireUniqueOldName ?? true;
+
+      const { result: templates } = await client.listTemplates(200);
+      const byId = new Map(templates.map((t) => [t.id, t]));
+      const byName = new Map<string, typeof templates>();
+      for (const t of templates) {
+        const arr = byName.get(t.name) ?? [];
+        arr.push(t);
+        byName.set(t.name, arr);
+      }
+
+      type PlanItem =
+        | { kind: 'ok'; templateId: string; oldName: string; newName: string }
+        | { kind: 'skip'; reason: string; templateId?: string; oldName?: string; newName: string }
+        | { kind: 'error'; reason: string; templateId?: string; oldName?: string; newName: string };
+
+      const plan: PlanItem[] = [];
+
+      for (const r of renames) {
+        if (!r.templateId && !r.oldName) {
+          plan.push({
+            kind: 'error',
+            reason: 'missing both templateId and oldName',
+            newName: r.newName,
+          });
+          if (wantStopOnError) break;
+          continue;
+        }
+
+        let resolved = r.templateId ? byId.get(r.templateId) : undefined;
+        if (!resolved && r.oldName) {
+          const matches = byName.get(r.oldName) ?? [];
+          if (matches.length === 0) {
+            plan.push({
+              kind: 'error',
+              reason: `oldName not found: "${r.oldName}"`,
+              oldName: r.oldName,
+              newName: r.newName,
+            });
+            if (wantStopOnError) break;
+            continue;
+          }
+          if (wantRequireUnique && matches.length !== 1) {
+            plan.push({
+              kind: 'error',
+              reason: `oldName is not unique ("${r.oldName}" matches ${matches.length} templates: ${matches
+                .map((m) => m.id)
+                .join(', ')})`,
+              oldName: r.oldName,
+              newName: r.newName,
+            });
+            if (wantStopOnError) break;
+            continue;
+          }
+          resolved = matches[0];
+        }
+
+        if (!resolved) {
+          plan.push({
+            kind: 'error',
+            reason: `templateId not found: "${r.templateId}"`,
+            templateId: r.templateId,
+            oldName: r.oldName,
+            newName: r.newName,
+          });
+          if (wantStopOnError) break;
+          continue;
+        }
+
+        if (resolved.name === r.newName) {
+          plan.push({
+            kind: 'skip',
+            reason: 'no-op (already has that name)',
+            templateId: resolved.id,
+            oldName: resolved.name,
+            newName: r.newName,
+          });
+          continue;
+        }
+
+        plan.push({
+          kind: 'ok',
+          templateId: resolved.id,
+          oldName: resolved.name,
+          newName: r.newName,
+        });
+      }
+
+      const lines: string[] = [];
+      const okCount = plan.filter((p) => p.kind === 'ok').length;
+      const skipCount = plan.filter((p) => p.kind === 'skip').length;
+      const errCount = plan.filter((p) => p.kind === 'error').length;
+
+      if (wantDryRun) {
+        lines.push(`🧪 Dry run. Planned: ok=${okCount}, skip=${skipCount}, error=${errCount}`);
+        for (const p of plan) {
+          if (p.kind === 'ok') lines.push(`- ✅ [${p.templateId}] "${p.oldName}" → "${p.newName}"`);
+          if (p.kind === 'skip')
+            lines.push(`- ⏭  [${p.templateId ?? '—'}] ${p.reason}: "${p.oldName ?? p.oldName ?? '—'}"`);
+          if (p.kind === 'error')
+            lines.push(
+              `- ❌ ${p.reason} (templateId=${p.templateId ?? '—'}, oldName=${p.oldName ?? '—'}, newName="${p.newName}")`,
+            );
+        }
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+
+      lines.push(`Executing renames: ok=${okCount}, skip=${skipCount}, error=${errCount}`);
+
+      const results: Array<{ templateId: string; status: 'renamed' | 'failed'; message: string }> = [];
+      for (const p of plan) {
+        if (p.kind !== 'ok') continue;
+        try {
+          const updated = await client.updateTemplate(p.templateId, { name: p.newName });
+          results.push({
+            templateId: updated.id,
+            status: 'renamed',
+            message: `"${p.oldName}" → "${updated.name}" (${updated.updated_at})`,
+          });
+        } catch (e) {
+          const msg = String(e);
+          results.push({ templateId: p.templateId, status: 'failed', message: msg });
+          if (wantStopOnError) break;
+        }
+      }
+
+      for (const r of results) {
+        lines.push(r.status === 'renamed' ? `- ✅ [${r.templateId}] ${r.message}` : `- ❌ [${r.templateId}] ${r.message}`);
+      }
+
+      const failed = results.filter((r) => r.status === 'failed').length;
+      if (failed > 0) lines.push(`\nFailures: ${failed}. Re-run with dryRun=true to inspect plan.`);
+
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
     },
   );
 
