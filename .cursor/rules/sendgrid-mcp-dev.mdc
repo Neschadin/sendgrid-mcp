@@ -1,0 +1,34 @@
+---
+description: Development conventions for this SendGrid MCP server repository
+alwaysApply: true
+---
+
+# SendGrid MCP Server Development Rule
+
+- Scope is this repository only: build and maintain the SendGrid MCP server implementation.
+- Prefer SendGrid-side diagnostics over local guesses: use `/v3/messages`, suppressions, and Event Webhook APIs when adding or changing diagnostic behavior.
+- Keep contact/list marketing CRUD out of scope unless explicitly requested.
+- Preserve tool naming and behavior stability; add new tools without silently breaking existing tool contracts.
+- For send operations, maintain preflight-first design (payload validation, template active checks, sender identity checks, attachment validation).
+- Keep API wrappers in `src/client.ts`; keep tool orchestration in `src/tools/*.ts`; avoid mixing transport/client logic into tool files.
+- When adding webhook features, support signed webhook verification paths and make receiver behavior observable through MCP tools.
+- Use strict TypeScript types for request/response payloads and normalize SendGrid error handling through shared client error types.
+- Update `MCP_TOOLS.md` whenever tool surface changes.
+
+## Documentation policy (source of truth)
+
+- For any SendGrid API/tooling change, validate behavior against official docs first.
+- Primary references:
+  - `https://www.twilio.com/docs/sendgrid/for-developers.md`
+  - `https://www.twilio.com/docs/sendgrid/api-reference`
+  - `https://support.sendgrid.com/hc/en-us/sections/360006896333-Best-Practices`
+  - `https://support.sendgrid.com/hc/en-us/sections/360006896313-Delivery-Troubleshooting`
+- If code and docs diverge, prefer docs and align implementation (or document intentional deviation).
+- For new diagnostics tools, include a doc-driven rationale (which deliverability/troubleshooting case is being covered).
+
+## Quick checklist for PR-sized changes
+
+- Added/changed tool has a clear description and schema.
+- New SendGrid endpoint support is implemented in `src/client.ts`.
+- Lints are clean; typecheck passes (or known external lib conflict is documented).
+- Docs updated in `MCP_TOOLS.md`.

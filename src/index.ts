@@ -1,12 +1,14 @@
 #!/usr/bin/env bun
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { SendGridClient } from './client';
-import { registerTemplateTools } from './tools/templates';
-import { registerEmailTools } from './tools/email';
-import { registerDiagnosticsTools } from './tools/diagnostics';
-import { registerSyncTools } from './tools/sync';
 import { version } from '../package.json';
+import { SendGridClient } from './client';
+import { registerDiagnosticsTools } from './tools/diagnostics';
+import { registerEmailTools } from './tools/email';
+import { registerPreflightTools } from './tools/preflight';
+import { registerSyncTools } from './tools/sync';
+import { registerTemplateTools } from './tools/templates';
+import { startWebhookReceiverFromEnv } from './webhook_receiver';
 
 const REQUIRED_ENV = ['SENDGRID_API_KEY', 'SENDGRID_FROM_EMAIL'] as const;
 
@@ -30,6 +32,7 @@ function getEnv(): {
 
 async function main() {
   const env = getEnv();
+  startWebhookReceiverFromEnv();
   const client = new SendGridClient(env.apiKey);
 
   const server = new McpServer({
@@ -39,6 +42,7 @@ async function main() {
 
   registerTemplateTools(server, client);
   registerEmailTools(server, client, env.fromEmail, env.fromName);
+  registerPreflightTools(server, client);
   registerDiagnosticsTools(server, client);
   registerSyncTools(server, client);
 

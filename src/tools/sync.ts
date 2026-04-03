@@ -1,5 +1,5 @@
-import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { z } from 'zod';
 import type { SendGridClient } from '../client';
 
 const DEFAULT_CONSTANTS_PATH =
@@ -17,11 +17,14 @@ function parseTemplatesFromSource(source: string): Record<string, string> {
   if (!blockMatch) return result;
 
   const block = blockMatch[1];
+  if (!block) return result;
   // Each line: 'key': 'd-xxxx',  or  key: 'd-xxxx',
   const lineRe = /['"]?([\w.]+)['"]?\s*:\s*['"]([^'"]+)['"]/g;
-  let m: RegExpExecArray | null;
-  while ((m = lineRe.exec(block)) !== null) {
-    result[m[1]] = m[2];
+  for (const match of block.matchAll(lineRe)) {
+    const key = match[1];
+    const templateId = match[2];
+    if (!key || !templateId) continue;
+    result[key] = templateId;
   }
   return result;
 }
