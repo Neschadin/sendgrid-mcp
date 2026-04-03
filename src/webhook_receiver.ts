@@ -1,4 +1,4 @@
-import { createVerify } from 'node:crypto';
+import { logDebug, logInfo, logWarn } from './logger';
 
 export interface ReceivedWebhookEvent {
   receivedAt: string;
@@ -36,6 +36,7 @@ let runtime: ReceiverRuntime | undefined;
 let listening = false;
 let lastError: string | undefined;
 const storedEvents: ReceivedWebhookEvent[] = [];
+let webhookServer: ReturnType<typeof Bun.serve> | undefined;
 
 function parseBooleanEnv(
   value: string | undefined,
@@ -59,20 +60,54 @@ function normalizePublicKey(publicKey: string): string {
   ].join('\n');
 }
 
-function verifyWebhookSignature(params: {
-  payloadBytes: Buffer;
+function pemToDerBytes(publicKeyPem: string): Uint8Array {
+  const base64Body = publicKeyPem
+    .replace(/-----BEGIN PUBLIC KEY-----/gu, '')
+    .replace(/-----END PUBLIC KEY-----/gu, '')
+    .replace(/\s+/gu, '');
+  return Uint8Array.from(atob(base64Body), (char) => char.charCodeAt(0));
+}
+
+function base64ToBytes(value: string): Uint8Array {
+  return Uint8Array.from(atob(value), (char) => char.charCodeAt(0));
+}
+
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  return bytes.buffer.slice(
+    bytes.byteOffset,
+    bytes.byteOffset + bytes.byteLength,
+  ) as ArrayBuffer;
+}
+
+async function verifyWebhookSignature(params: {
+  payloadBytes: Uint8Array;
   timestamp: string;
   signatureBase64: string;
   publicKey: string;
-}): boolean {
-  const verifier = createVerify('sha256');
-  verifier.update(Buffer.from(params.timestamp, 'utf8'));
-  verifier.update(params.payloadBytes);
-  verifier.end();
-
-  const signature = Buffer.from(params.signatureBase64, 'base64');
+}): Promise<boolean> {
+  const signature = base64ToBytes(params.signatureBase64);
   const pem = normalizePublicKey(params.publicKey);
-  return verifier.verify(pem, signature);
+  const key = await crypto.subtle.importKey(
+    'spki',
+    toArrayBuffer(pemToDerBytes(pem)),
+    { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
+    false,
+    ['verify'],
+  );
+
+  const timestampBytes = new TextEncoder().encode(params.timestamp);
+  const signedPayload = new Uint8Array(
+    timestampBytes.length + params.payloadBytes.length,
+  );
+  signedPayload.set(timestampBytes, 0);
+  signedPayload.set(params.payloadBytes, timestampBytes.length);
+
+  return crypto.subtle.verify(
+    { name: 'RSASSA-PKCS1-v1_5' },
+    key,
+    toArrayBuffer(signature),
+    toArrayBuffer(signedPayload),
+  );
 }
 
 function toRecord(value: unknown): Record<string, unknown> | undefined {
@@ -107,19 +142,16 @@ function logWebhookTraffic(
 ) {
   if (!runtime.verbose) return;
   const pathname = new URL(request.url).pathname;
-  process.stderr.write(
-    `[sendgrid-mcp] webhook ${label} ${request.method} ${pathname}` +
+  logDebug(
+    `webhook ${label} ${request.method} ${pathname}` +
       formatUaSuffix(request) +
-      (extra ? ` | ${extra}` : '') +
-      '\n',
+      (extra ? ` | ${extra}` : ''),
   );
 }
 
 function formatKeyValueBlock(fields: Array<[string, string]>): string {
   const maxKey = fields.reduce((m, [k]) => Math.max(m, k.length), 0);
-  return fields
-    .map(([k, v]) => `  ${k.padEnd(maxKey, ' ')}  ${v}`)
-    .join('\n');
+  return fields.map(([k, v]) => `  ${k.padEnd(maxKey, ' ')}  ${v}`).join('\n');
 }
 
 function pushStoredEvents(
@@ -135,15 +167,13 @@ function pushStoredEvents(
 }
 
 export function startWebhookReceiverFromEnv() {
-  const verbose = parseBooleanEnv(
-    process.env['SENDGRID_EVENT_WEBHOOK_VERBOSE'],
-    false,
-  );
-  const portRaw = process.env['SENDGRID_EVENT_WEBHOOK_PORT'];
+  const env = Bun.env;
+  const verbose = parseBooleanEnv(env['SENDGRID_EVENT_WEBHOOK_VERBOSE'], false);
+  const portRaw = env['SENDGRID_EVENT_WEBHOOK_PORT'];
   if (!portRaw || portRaw.trim().length === 0) {
     if (verbose) {
-      process.stderr.write(
-        '[sendgrid-mcp] Webhook receiver disabled (SENDGRID_EVENT_WEBHOOK_PORT not set)\n',
+      logDebug(
+        'Webhook receiver disabled (SENDGRID_EVENT_WEBHOOK_PORT not set)',
       );
     }
     return;
@@ -157,20 +187,19 @@ export function startWebhookReceiverFromEnv() {
     );
   }
 
-  const host = process.env['SENDGRID_EVENT_WEBHOOK_HOST']?.trim() || '0.0.0.0';
-  const path =
-    process.env['SENDGRID_EVENT_WEBHOOK_PATH']?.trim() || '/sendgrid/events';
+  const host = env['SENDGRID_EVENT_WEBHOOK_HOST']?.trim() || '0.0.0.0';
+  const path = env['SENDGRID_EVENT_WEBHOOK_PATH']?.trim() || '/sendgrid/events';
   const healthPath =
-    process.env['SENDGRID_EVENT_WEBHOOK_HEALTH_PATH']?.trim() ||
+    env['SENDGRID_EVENT_WEBHOOK_HEALTH_PATH']?.trim() ||
     '/sendgrid/events/health';
   const signatureRequired = parseBooleanEnv(
-    process.env['SENDGRID_EVENT_WEBHOOK_REQUIRE_SIGNATURE'],
+    env['SENDGRID_EVENT_WEBHOOK_REQUIRE_SIGNATURE'],
     false,
   );
-  const publicKey = process.env['SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY']?.trim();
+  const publicKey = env['SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY']?.trim();
   const maxStoredEvents = Math.max(
     100,
-    Number(process.env['SENDGRID_EVENT_WEBHOOK_MAX_EVENTS'] ?? '5000') || 5000,
+    Number(env['SENDGRID_EVENT_WEBHOOK_MAX_EVENTS'] ?? '5000') || 5000,
   );
 
   if (signatureRequired && !publicKey) {
@@ -190,7 +219,7 @@ export function startWebhookReceiverFromEnv() {
     maxStoredEvents,
   };
 
-  Bun.serve({
+  webhookServer = Bun.serve({
     hostname: host,
     port: parsedPort,
     fetch: async (request) => {
@@ -226,16 +255,16 @@ export function startWebhookReceiverFromEnv() {
 
       if (request.method !== 'POST') {
         if (runtime.verbose) {
-          process.stderr.write(
-            `[sendgrid-mcp] webhook event ${request.method} ${runtime.path}${uaSuffix} -> 405 (expected POST)\n`,
+          logDebug(
+            `webhook event ${request.method} ${runtime.path}${uaSuffix} -> 405 (expected POST)`,
           );
         }
         return new Response('Method Not Allowed', { status: 405 });
       }
 
       try {
-        const payloadBytes = Buffer.from(await request.arrayBuffer());
-        const payloadText = payloadBytes.toString('utf8');
+        const payloadBytes = new Uint8Array(await request.arrayBuffer());
+        const payloadText = new TextDecoder().decode(payloadBytes);
         const signature = request.headers.get(
           'x-twilio-email-event-webhook-signature',
         );
@@ -245,7 +274,7 @@ export function startWebhookReceiverFromEnv() {
 
         let signatureVerified = false;
         if (runtime.publicKey && signature && timestamp) {
-          signatureVerified = verifyWebhookSignature({
+          signatureVerified = await verifyWebhookSignature({
             payloadBytes,
             timestamp,
             signatureBase64: signature,
@@ -259,8 +288,8 @@ export function startWebhookReceiverFromEnv() {
           lastError =
             'Signature verification failed for incoming webhook payload.';
           if (runtime.verbose) {
-            process.stderr.write(
-              `[sendgrid-mcp] webhook event POST ${runtime.path}${uaSuffix} -> 401 signature_verify failed bytes=${payloadBytes.length}\n`,
+            logWarn(
+              `webhook event POST ${runtime.path}${uaSuffix} -> 401 signature_verify failed bytes=${payloadBytes.length}`,
             );
           }
           return new Response(
@@ -291,16 +320,15 @@ export function startWebhookReceiverFromEnv() {
             acc[t] = (acc[t] ?? 0) + 1;
             return acc;
           }, {});
-          process.stderr.write(
+          logDebug(
             [
-              `[sendgrid-mcp] webhook event POST ${runtime.path}${uaSuffix} -> 200`,
+              `webhook event POST ${runtime.path}${uaSuffix} -> 200`,
               formatKeyValueBlock([
                 ['accepted', String(normalized.length)],
                 ['signatureVerified', signatureVerified ? 'true' : 'false'],
                 ['bytes', String(payloadBytes.length)],
                 ['types', JSON.stringify(typeSummary)],
               ]),
-              '',
             ].join('\n'),
           );
         }
@@ -315,8 +343,8 @@ export function startWebhookReceiverFromEnv() {
       } catch (error) {
         lastError = String(error);
         if (runtime.verbose) {
-          process.stderr.write(
-            `[sendgrid-mcp] webhook event POST ${runtime.path}${uaSuffix} -> 400 parse error: ${lastError}\n`,
+          logWarn(
+            `webhook event POST ${runtime.path}${uaSuffix} -> 400 parse error: ${lastError}`,
           );
         }
         return new Response(
@@ -333,15 +361,30 @@ export function startWebhookReceiverFromEnv() {
   listening = true;
 
   if (verbose) {
-    process.stderr.write(
+    logInfo(
       [
-        '[sendgrid-mcp] Webhook receiver started',
-        `  listen:  http://${host}:${parsedPort}${path}`,
-        `  health:  http://${host}:${parsedPort}${healthPath}`,
-        `  signed:  required=${signatureRequired ? 'yes' : 'no'} configured=${publicKey ? 'yes' : 'no'}`,
-        `  buffer:  maxEvents=${maxStoredEvents}`,
-      ].join('\n') + '\n',
+        'Webhook receiver started',
+        `listen=http://${host}:${parsedPort}${path}`,
+        `health=http://${host}:${parsedPort}${healthPath}`,
+        `signed_required=${signatureRequired ? 'yes' : 'no'}`,
+        `signed_configured=${publicKey ? 'yes' : 'no'}`,
+        `max_events=${maxStoredEvents}`,
+      ].join(' | '),
     );
+  }
+}
+
+export function stopWebhookReceiver() {
+  if (!webhookServer) return;
+  try {
+    webhookServer.stop();
+    logInfo('Webhook receiver stopped');
+  } catch (error) {
+    logWarn(`Failed to stop webhook receiver: ${String(error)}`);
+  } finally {
+    webhookServer = undefined;
+    runtime = undefined;
+    listening = false;
   }
 }
 

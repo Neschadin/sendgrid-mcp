@@ -1,4 +1,6 @@
 const SENDGRID_BASE = 'https://api.sendgrid.com/v3';
+const MAX_RATE_LIMIT_RETRIES = 3;
+const DEFAULT_RETRY_DELAY_MS = 1000;
 
 type QueryParamValue = string | number | boolean | undefined;
 
@@ -65,6 +67,22 @@ function parseSendGridErrorDetails(rawBody: string): SendGridErrorDetail[] {
   }
 
   return [{ message: trimmed }];
+}
+
+function parseRetryAfterMs(value: string | null): number | undefined {
+  if (!value) return undefined;
+
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.max(0, Math.round(seconds * 1000));
+  }
+
+  const dateMs = Date.parse(value);
+  if (!Number.isNaN(dateMs)) {
+    return Math.max(0, dateMs - Date.now());
+  }
+
+  return undefined;
 }
 
 export class SendGridApiError extends Error {
@@ -331,6 +349,17 @@ export interface GlobalStats {
 }
 
 export class SendGridClient {
+  private parseNextPageToken(metadataNext?: string): string | undefined {
+    if (!metadataNext) return undefined;
+
+    try {
+      const nextUrl = new URL(metadataNext, SENDGRID_BASE);
+      return nextUrl.searchParams.get('page_token') ?? undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   private readonly apiKey: string;
 
   constructor(apiKey: string) {
@@ -360,24 +389,43 @@ export class SendGridClient {
     params?: Record<string, QueryParamValue>,
   ): Promise<Response> {
     const url = this.buildUrl(path, params);
-    const res = await fetch(url.toString(), {
-      method,
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-    });
 
-    if (res.ok) return res;
+    for (let attempt = 0; attempt <= MAX_RATE_LIMIT_RETRIES; attempt++) {
+      const res = await fetch(url.toString(), {
+        method,
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+      });
 
-    const rawBody = await res.text();
+      if (res.ok) return res;
+
+      if (res.status === 429 && attempt < MAX_RATE_LIMIT_RETRIES) {
+        const retryDelay =
+          parseRetryAfterMs(res.headers.get('retry-after')) ??
+          DEFAULT_RETRY_DELAY_MS * (attempt + 1);
+        await Bun.sleep(retryDelay);
+        continue;
+      }
+
+      const rawBody = await res.text();
+      throw new SendGridApiError({
+        status: res.status,
+        method,
+        path,
+        errors: parseSendGridErrorDetails(rawBody),
+        rawBody,
+      });
+    }
+
     throw new SendGridApiError({
-      status: res.status,
+      status: 429,
       method,
       path,
-      errors: parseSendGridErrorDetails(rawBody),
-      rawBody,
+      errors: [{ message: 'Rate limit retry attempts exhausted.' }],
+      rawBody: '',
     });
   }
 
@@ -411,11 +459,28 @@ export class SendGridClient {
 
   // ─── Templates ──────────────────────────────────────────────────────────────
 
-  listTemplates(pageSize = 50): Promise<TemplateListResponse> {
+  listTemplates(
+    pageSize = 50,
+    pageToken?: string,
+  ): Promise<TemplateListResponse> {
     return this.request<TemplateListResponse>('GET', '/templates', undefined, {
       generations: 'dynamic',
       page_size: pageSize,
+      page_token: pageToken,
     });
+  }
+
+  async listAllDynamicTemplates(pageSize = 200): Promise<Template[]> {
+    const all: Template[] = [];
+    let nextPageToken: string | undefined;
+
+    do {
+      const page = await this.listTemplates(pageSize, nextPageToken);
+      all.push(...(page.result ?? []));
+      nextPageToken = this.parseNextPageToken(page._metadata?.next);
+    } while (nextPageToken);
+
+    return all;
   }
 
   getTemplate(templateId: string): Promise<Template> {

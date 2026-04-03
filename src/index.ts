@@ -2,13 +2,17 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { version } from '../package.json';
+import { logError, logInfo } from './logger';
 import { SendGridClient } from './client';
 import { registerDiagnosticsTools } from './tools/diagnostics';
 import { registerEmailTools } from './tools/email';
 import { registerPreflightTools } from './tools/preflight';
 import { registerSyncTools } from './tools/sync';
 import { registerTemplateTools } from './tools/templates';
-import { startWebhookReceiverFromEnv } from './webhook_receiver';
+import {
+  startWebhookReceiverFromEnv,
+  stopWebhookReceiver,
+} from './webhook_receiver';
 
 const REQUIRED_ENV = ['SENDGRID_API_KEY', 'SENDGRID_FROM_EMAIL'] as const;
 
@@ -17,16 +21,18 @@ function getEnv(): {
   fromEmail: string;
   fromName: string;
 } {
+  const env = Bun.env;
+
   for (const key of REQUIRED_ENV) {
-    if (!process.env[key]) {
-      process.stderr.write(`[sendgrid-mcp] Missing required env var: ${key}\n`);
+    if (!env[key]) {
+      logError(`Missing required env var: ${key}`);
       process.exit(1);
     }
   }
   return {
-    apiKey: process.env['SENDGRID_API_KEY']!,
-    fromEmail: process.env['SENDGRID_FROM_EMAIL']!,
-    fromName: process.env['SENDGRID_FROM_NAME'] ?? 'Kennitalan',
+    apiKey: env['SENDGRID_API_KEY']!,
+    fromEmail: env['SENDGRID_FROM_EMAIL']!,
+    fromName: env['SENDGRID_FROM_NAME'] ?? 'Kennitalan',
   };
 }
 
@@ -47,12 +53,38 @@ async function main() {
   registerSyncTools(server, client);
 
   const transport = new StdioServerTransport();
+  (transport as { onclose?: () => void }).onclose = () => {
+    logInfo('Transport closed');
+    stopWebhookReceiver();
+  };
+  let shuttingDown = false;
+  const shutdown = async (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logInfo(`Shutdown requested (${signal})`);
+    stopWebhookReceiver();
+    try {
+      await (transport as { close?: () => Promise<void> | void }).close?.();
+      await (server as { close?: () => Promise<void> | void }).close?.();
+    } finally {
+      process.exit(0);
+    }
+  };
+
+  process.on('SIGINT', () => {
+    void shutdown('SIGINT');
+  });
+  process.on('SIGTERM', () => {
+    void shutdown('SIGTERM');
+  });
+
   await server.connect(transport);
 
-  process.stderr.write('[sendgrid-mcp] Server started\n');
+  logInfo('Server started');
 }
 
 main().catch((err) => {
-  process.stderr.write(`[sendgrid-mcp] Fatal: ${String(err)}\n`);
+  logError(`Fatal: ${String(err)}`);
+  stopWebhookReceiver();
   process.exit(1);
 });

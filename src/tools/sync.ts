@@ -1,6 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { SendGridClient } from '../client';
+import { ensureSafeToolRegistration } from './tool_utils';
 
 const DEFAULT_CONSTANTS_PATH =
   '/Users/oleksandrn/P/Kennitalan-BE/src/notifications/notifications.constants.ts';
@@ -30,6 +31,7 @@ function parseTemplatesFromSource(source: string): Record<string, string> {
 }
 
 export function registerSyncTools(server: McpServer, client: SendGridClient) {
+  ensureSafeToolRegistration(server);
   server.registerTool(
     'sync_template_ids',
     {
@@ -72,7 +74,7 @@ export function registerSyncTools(server: McpServer, client: SendGridClient) {
       }
 
       // Fetch real templates from SendGrid
-      const { result: sgTemplates } = await client.listTemplates();
+      const sgTemplates = await client.listAllDynamicTemplates(200);
       const sgById = new Map(sgTemplates.map((t) => [t.id, t]));
 
       const placeholderPattern = /^d-[a-z]+-?[a-z]*$/;

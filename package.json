@@ -4,12 +4,13 @@
   "description": "SendGrid MCP Server — template management, test sends, diagnostics",
   "type": "module",
   "bin": {
-    "sendgrid-tool": "src/index.ts"
+    "sendgrid-tool": "bin/sendgrid-tool"
   },
   "scripts": {
     "dev": "bun --watch src/index.ts",
     "start": "bun src/index.ts",
     "build": "bun build --compile src/index.ts --outfile bin/sendgrid-tool",
+    "inspect": "npx @modelcontextprotocol/inspector bun src/index.ts",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint"
   },

@@ -1,31 +1,61 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { SendGridClient } from '../client';
+import { ensureSafeToolRegistration } from './tool_utils';
 
 export function registerTemplateTools(
   server: McpServer,
   client: SendGridClient,
 ) {
+  ensureSafeToolRegistration(server);
   const TemplateName = z
     .string()
     .min(1)
     .max(100)
     .describe('Template name (max 100 chars)');
 
+  const ListTemplatesOutputSchema = z.object({
+    count: z.number().int().nonnegative(),
+    templates: z.array(
+      z.object({
+        id: z.string(),
+        name: z.string(),
+        versions: z.number().int().nonnegative(),
+        activeSubject: z.string().nullable(),
+        updatedAt: z.string(),
+      }),
+    ),
+  });
+
   server.registerTool(
     'list_templates',
     {
       description:
         'List all dynamic SendGrid templates with their IDs, names, and version counts',
-      inputSchema: {},
+      inputSchema: z.object({}),
+      outputSchema: ListTemplatesOutputSchema,
     },
     async () => {
-      const { result } = await client.listTemplates();
+      const result = await client.listAllDynamicTemplates(200);
+      const templates = result.map((t) => {
+        const active = t.versions.find((v) => v.active === 1);
+        return {
+          id: t.id,
+          name: t.name,
+          versions: t.versions.length,
+          activeSubject: active?.subject ?? null,
+          updatedAt: t.updated_at,
+        };
+      });
       const rows = result.map((t) => {
         const active = t.versions.find((v) => v.active === 1);
         return `• [${t.id}] ${t.name}  (versions: ${t.versions.length}, active subject: "${active?.subject ?? '—'}", updated: ${t.updated_at})`;
       });
       return {
+        structuredContent: {
+          count: templates.length,
+          templates,
+        },
         content: [
           {
             type: 'text',
@@ -107,7 +137,7 @@ export function registerTemplateTools(
       const wantStopOnError = stopOnError ?? false;
       const wantRequireUnique = requireUniqueOldName ?? true;
 
-      const { result: templates } = await client.listTemplates(200);
+      const templates = await client.listAllDynamicTemplates(200);
       const byId = new Map(templates.map((t) => [t.id, t]));
       const byName = new Map<string, typeof templates>();
       for (const t of templates) {
@@ -446,6 +476,9 @@ export function registerTemplateTools(
         'Permanently delete a SendGrid template and all its versions. Use with caution.',
       inputSchema: z.object({
         templateId: z.string().describe('Template ID to delete'),
+        confirmToken: z
+          .literal('CONFIRM')
+          .describe('Safety token required for destructive operations'),
       }),
     },
     async ({ templateId }) => {

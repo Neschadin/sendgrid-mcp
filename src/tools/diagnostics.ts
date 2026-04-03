@@ -1,6 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { isSendGridApiError, type SendGridClient } from '../client';
+import { ensureSafeToolRegistration, formatToolError } from './tool_utils';
 import {
   clearStoredWebhookEvents,
   getStoredWebhookEvents,
@@ -16,6 +17,16 @@ type EngagementEvent = {
   sg_machine_open?: boolean;
   sg_message_id?: string;
 };
+
+const DateSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD')
+  .refine((value) => {
+    const date = new Date(`${value}T00:00:00.000Z`);
+    return (
+      !Number.isNaN(date.getTime()) && date.toISOString().startsWith(value)
+    );
+  }, 'Invalid calendar date');
 
 function domainFromEmail(email?: string): string {
   if (!email) return '';
@@ -179,6 +190,7 @@ export function registerDiagnosticsTools(
   server: McpServer,
   client: SendGridClient,
 ) {
+  ensureSafeToolRegistration(server);
   server.registerTool(
     'search_message_activity',
     {
@@ -216,11 +228,9 @@ export function registerDiagnosticsTools(
               text:
                 rows.length === 0
                   ? 'No messages matched query.'
-                  : [
-                      `Matched messages: ${rows.length}`,
-                      '',
-                      ...rows,
-                    ].join('\n'),
+                  : [`Matched messages: ${rows.length}`, '', ...rows].join(
+                      '\n',
+                    ),
             },
           ],
         };
@@ -231,9 +241,7 @@ export function registerDiagnosticsTools(
               ? '\nHint: Email Activity API may require the Email Activity add-on.'
               : '';
           throw new Error(
-            `Failed to query Email Activity API (${error.status}).${addonHint}\n${error.errors
-              .map((entry) => `- ${entry.message}`)
-              .join('\n')}`,
+            `Failed to query Email Activity API.${addonHint}\n${formatToolError(error)}`,
           );
         }
         throw error;
@@ -244,7 +252,8 @@ export function registerDiagnosticsTools(
   server.registerTool(
     'get_message_activity',
     {
-      description: 'Get SendGrid Email Activity details for one message by msg_id.',
+      description:
+        'Get SendGrid Email Activity details for one message by msg_id.',
       inputSchema: z.object({
         msgId: z.string().min(1),
       }),
@@ -262,9 +271,7 @@ export function registerDiagnosticsTools(
               ? '\nHint: Email Activity API access may be unavailable without add-on.'
               : '';
           throw new Error(
-            `Failed to load message activity (${error.status}).${addonHint}\n${error.errors
-              .map((entry) => `- ${entry.message}`)
-              .join('\n')}`,
+            `Failed to load message activity.${addonHint}\n${formatToolError(error)}`,
           );
         }
         throw error;
@@ -275,7 +282,8 @@ export function registerDiagnosticsTools(
   server.registerTool(
     'list_event_webhooks',
     {
-      description: 'List all Event Webhook configurations directly from SendGrid.',
+      description:
+        'List all Event Webhook configurations directly from SendGrid.',
       inputSchema: z.object({
         includeAccountStatusChange: z.boolean().optional(),
       }),
@@ -345,6 +353,9 @@ export function registerDiagnosticsTools(
       description:
         'Update Event Webhook settings in SendGrid (URL, enabled flag, and event toggles).',
       inputSchema: z.object({
+        confirmToken: z
+          .literal('CONFIRM')
+          .describe('Safety token required for mutating webhook settings'),
         id: z.string().min(1),
         includeAccountStatusChange: z.boolean().optional(),
         enabled: z.boolean().optional(),
@@ -426,6 +437,9 @@ export function registerDiagnosticsTools(
       description:
         'Enable or disable SendGrid signature verification for a specific Event Webhook.',
       inputSchema: z.object({
+        confirmToken: z
+          .literal('CONFIRM')
+          .describe('Safety token required for mutating webhook settings'),
         id: z.string().min(1),
         enabled: z.boolean(),
       }),
@@ -455,7 +469,7 @@ export function registerDiagnosticsTools(
     {
       description:
         'Show local webhook receiver status for incoming SendGrid Event Webhook posts.',
-      inputSchema: {},
+      inputSchema: z.object({}),
     },
     async () => {
       return {
@@ -590,10 +604,9 @@ export function registerDiagnosticsTools(
         activityQuery: z.string().optional(),
         activityLimit: z.number().int().min(1).max(1000).optional(),
         provider: z.string().optional(),
-        sinceDate: z
-          .string()
-          .optional()
-          .describe('YYYY-MM-DD for aggregate stats pull'),
+        sinceDate: DateSchema.optional().describe(
+          'YYYY-MM-DD for aggregate stats pull',
+        ),
         partnerAccountId: z
           .string()
           .optional()
@@ -622,13 +635,9 @@ export function registerDiagnosticsTools(
             `Message activity for ${messageId}: status=${String(message.status ?? 'n/a')}, from=${String(message.from_email ?? 'n/a')}, to=${String(message.to_email ?? 'n/a')}, last_event_time=${String(message.last_event_time ?? 'n/a')}`,
           );
         } catch (error) {
-          if (isSendGridApiError(error)) {
-            findings.push(
-              `Message activity lookup failed (${error.status}): ${error.errors.map((entry) => entry.message).join('; ')}`,
-            );
-          } else {
-            findings.push(`Message activity lookup failed: ${String(error)}`);
-          }
+          findings.push(
+            `Message activity lookup failed.\n${formatToolError(error)}`,
+          );
         }
       }
 
@@ -642,13 +651,9 @@ export function registerDiagnosticsTools(
             `Email Activity search matched ${activity.messages?.length ?? 0} messages for query: ${activityQuery}`,
           );
         } catch (error) {
-          if (isSendGridApiError(error)) {
-            findings.push(
-              `Email Activity search failed (${error.status}): ${error.errors.map((entry) => entry.message).join('; ')}`,
-            );
-          } else {
-            findings.push(`Email Activity search failed: ${String(error)}`);
-          }
+          findings.push(
+            `Email Activity search failed.\n${formatToolError(error)}`,
+          );
         }
       }
 
@@ -659,7 +664,7 @@ export function registerDiagnosticsTools(
             `Suppression status for ${recipientEmail}: bounced=${suppression.bounced}, blocked=${suppression.blocked}, unsubscribed=${suppression.unsubscribed}, spamReported=${suppression.spamReported}`,
           );
         } catch (error) {
-          findings.push(`Suppression check failed: ${String(error)}`);
+          findings.push(`Suppression check failed.\n${formatToolError(error)}`);
         }
       }
 
@@ -676,7 +681,7 @@ export function registerDiagnosticsTools(
           );
         } catch (error) {
           findings.push(
-            `Template lookup failed for ${templateId}: ${String(error)}`,
+            `Template lookup failed for ${templateId}.\n${formatToolError(error)}`,
           );
         }
       }
@@ -706,7 +711,9 @@ export function registerDiagnosticsTools(
             `Sender checks for ${fromEmail}: domainAuthenticated=${domainAuthenticated}, senderVerified=${senderVerified}`,
           );
         } catch (error) {
-          findings.push(`Sender-auth checks failed: ${String(error)}`);
+          findings.push(
+            `Sender-auth checks failed.\n${formatToolError(error)}`,
+          );
         }
       }
 
@@ -715,7 +722,9 @@ export function registerDiagnosticsTools(
           const state = await client.getPartnerAccountState(partnerAccountId);
           findings.push(`Partner account state: ${state.state}`);
         } catch (error) {
-          findings.push(`Partner account-state check failed: ${String(error)}`);
+          findings.push(
+            `Partner account-state check failed.\n${formatToolError(error)}`,
+          );
         }
       }
 
@@ -749,7 +758,7 @@ export function registerDiagnosticsTools(
             `Stats since ${sinceDate}: requests=${total.requests}, delivered=${total.delivered} (${summarizeRates(total.requests, total.delivered)}), bounces=${total.bounces}, opens=${total.opens}, clicks=${total.clicks}, unsubscribes=${total.unsubscribes}, spam_reports=${total.spamReports}`,
           );
         } catch (error) {
-          findings.push(`Stats lookup failed: ${String(error)}`);
+          findings.push(`Stats lookup failed.\n${formatToolError(error)}`);
         }
       }
 
@@ -1026,9 +1035,12 @@ export function registerDiagnosticsTools(
             text:
               rows.length === 0
                 ? `No entries in ${type}.`
-                : [`Type: ${type}`, `Entries: ${rows.length}`, '', ...rows].join(
-                    '\n',
-                  ),
+                : [
+                    `Type: ${type}`,
+                    `Entries: ${rows.length}`,
+                    '',
+                    ...rows,
+                  ].join('\n'),
           },
         ],
       };
@@ -1042,6 +1054,13 @@ export function registerDiagnosticsTools(
         'Check if an email address is suppressed (bounced / blocked / unsubscribed / spam reported)',
       inputSchema: z.object({
         email: z.string().email().describe('Email address to check'),
+      }),
+      outputSchema: z.object({
+        email: z.string().email(),
+        bounced: z.boolean(),
+        blocked: z.boolean(),
+        unsubscribed: z.boolean(),
+        spamReported: z.boolean(),
       }),
     },
     async ({ email }) => {
@@ -1066,7 +1085,16 @@ export function registerDiagnosticsTools(
         }
       }
 
-      return { content: [{ type: 'text', text: lines.join('\n') }] };
+      return {
+        structuredContent: {
+          email,
+          bounced: result.bounced,
+          blocked: result.blocked,
+          unsubscribed: result.unsubscribed,
+          spamReported: result.spamReported,
+        },
+        content: [{ type: 'text', text: lines.join('\n') }],
+      };
     },
   );
 
@@ -1075,11 +1103,20 @@ export function registerDiagnosticsTools(
     {
       description: 'Get global email delivery statistics for a date range',
       inputSchema: z.object({
-        startDate: z.string().describe('Start date YYYY-MM-DD'),
-        endDate: z
-          .string()
-          .optional()
-          .describe('End date YYYY-MM-DD (defaults to today)'),
+        startDate: DateSchema.describe('Start date YYYY-MM-DD'),
+        endDate: DateSchema.optional().describe(
+          'End date YYYY-MM-DD (defaults to today)',
+        ),
+      }),
+      outputSchema: z.object({
+        startDate: z.string(),
+        endDate: z.string().nullable(),
+        totals: z.object({
+          requests: z.number(),
+          delivered: z.number(),
+          bounces: z.number(),
+          opens: z.number(),
+        }),
       }),
     },
     async ({ startDate, endDate }) => {
@@ -1118,6 +1155,11 @@ export function registerDiagnosticsTools(
       );
 
       return {
+        structuredContent: {
+          startDate,
+          endDate: endDate ?? null,
+          totals: total,
+        },
         content: [
           {
             type: 'text',

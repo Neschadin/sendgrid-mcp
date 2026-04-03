@@ -30,6 +30,60 @@ Out of scope: contact/list marketing CRUD.
 
 ## Tool Catalog
 
+### `list_templates`
+- **Purpose:** List all dynamic templates from SendGrid (full pagination).
+- **Inputs:** none.
+- **Typical flow:** Inventory before edits/migrations.
+- **Caveats:** Returns dynamic templates only.
+
+### `rename_template`
+- **Purpose:** Rename one template by template ID.
+- **Inputs:** `templateId`, `newName`.
+- **Typical flow:** Safe targeted rename.
+- **Caveats:** Changes template display name only.
+
+### `rename_templates_bulk`
+- **Purpose:** Bulk rename by `templateId` and/or `oldName`.
+- **Inputs:** `renames[]`, optional `dryRun`, `stopOnError`, `requireUniqueOldName`.
+- **Typical flow:** Large naming migrations.
+- **Caveats:** Use `dryRun=true` first on production accounts.
+
+### `get_template_html`
+- **Purpose:** Read HTML of active or explicit template version.
+- **Inputs:** `templateId`, optional `versionId`.
+- **Typical flow:** Inspect/render debugging.
+- **Caveats:** If `versionId` omitted, active version is used.
+
+### `create_template`
+- **Purpose:** Create a dynamic template with first active version.
+- **Inputs:** `name`, `versionName`, `subject`, `htmlContent`.
+- **Typical flow:** Bootstrap new notification templates.
+- **Caveats:** Creates both template and version in one operation.
+
+### `update_template_html`
+- **Purpose:** Update version-level content/subject/name.
+- **Inputs:** `templateId`, `versionId`, optional `htmlContent`, `subject`, `name`.
+- **Typical flow:** Iterative edits to an existing version.
+- **Caveats:** Does not auto-activate version.
+
+### `activate_template_version`
+- **Purpose:** Activate a template version.
+- **Inputs:** `templateId`, `versionId`.
+- **Typical flow:** Release updated template content.
+- **Caveats:** Only one version can be active.
+
+### `delete_template`
+- **Purpose:** Permanently delete a template.
+- **Inputs:** `templateId`.
+- **Typical flow:** Cleanup unused templates.
+- **Caveats:** Irreversible.
+
+### `sync_template_ids`
+- **Purpose:** Compare local `SENDGRID_TEMPLATES` constants with live SendGrid templates.
+- **Inputs:** optional `constantsPath`.
+- **Typical flow:** Keep backend constants aligned with real template IDs.
+- **Caveats:** Local constants parsing is regex-based.
+
 ### `validate_send_request`
 - **Purpose:** Preflight checks before send.
 - **Inputs:** `request`, optional `partnerAccountId`, `checkSenderIdentity`.
@@ -196,3 +250,52 @@ Signature mode:
 
 - `SENDGRID_EVENT_WEBHOOK_REQUIRE_SIGNATURE` (`true`/`false`)
 - `SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY` (required if signature required)
+
+---
+
+## Risk Matrix
+
+Risk levels:
+
+- `read-only` — no mutation in SendGrid/local state
+- `send` — can enqueue/send email
+- `mutates-sendgrid` — changes remote SendGrid configuration/state
+- `mutates-local` — changes local in-memory/buffer state
+
+Tool risk classification:
+
+- `list_templates`: `read-only`
+- `rename_template`: `mutates-sendgrid`
+- `rename_templates_bulk`: `mutates-sendgrid`
+- `get_template_html`: `read-only`
+- `create_template`: `mutates-sendgrid`
+- `update_template_html`: `mutates-sendgrid`
+- `activate_template_version`: `mutates-sendgrid`
+- `delete_template`: `mutates-sendgrid`
+- `sync_template_ids`: `read-only`
+- `validate_send_request`: `read-only`
+- `send_with_preflight`: `send`
+- `send_email_advanced`: `send`
+- `send_template_email_advanced`: `send`
+- `send_sandbox_email`: `send`
+- `send_test_email`: `send`
+- `create_batch_id`: `mutates-sendgrid`
+- `schedule_email`: `send`
+- `pause_scheduled_send`: `mutates-sendgrid`
+- `resume_scheduled_send`: `mutates-sendgrid`
+- `cancel_scheduled_send`: `mutates-sendgrid`
+- `search_message_activity`: `read-only`
+- `get_message_activity`: `read-only`
+- `list_event_webhooks`: `read-only`
+- `get_event_webhook`: `read-only`
+- `update_event_webhook`: `mutates-sendgrid`
+- `toggle_event_webhook_signature`: `mutates-sendgrid`
+- `get_webhook_receiver_status`: `read-only`
+- `get_received_webhook_events`: `read-only`
+- `clear_received_webhook_events`: `mutates-local`
+- `classify_sendgrid_error`: `read-only`
+- `triage_delivery_issue`: `read-only`
+- `analyze_engagement_anomalies`: `read-only`
+- `list_suppressions`: `read-only`
+- `check_suppression`: `read-only`
+- `get_email_stats`: `read-only`
