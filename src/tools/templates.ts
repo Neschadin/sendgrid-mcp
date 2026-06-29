@@ -3,6 +3,16 @@ import { z } from 'zod';
 import type { SendGridClient } from '../client';
 import { ensureSafeToolRegistration } from './tool_utils';
 
+const ConfirmTokenSchema = z
+  .literal('CONFIRM')
+  .describe('Required for mutating SendGrid template state');
+
+function requireConfirm(confirmToken: 'CONFIRM' | undefined, action: string) {
+  if (confirmToken !== 'CONFIRM') {
+    throw new Error(`Set confirmToken="CONFIRM" to ${action}.`);
+  }
+}
+
 export function registerTemplateTools(
   server: McpServer,
   client: SendGridClient,
@@ -75,11 +85,13 @@ export function registerTemplateTools(
       description:
         'Rename a dynamic template (updates the template name, not a version label)',
       inputSchema: z.object({
+        confirmToken: ConfirmTokenSchema,
         templateId: z.string().describe('Template ID, e.g. d-xxxxxxxxxxxxxxxx'),
         newName: TemplateName.describe('New template name'),
       }),
     },
-    async ({ templateId, newName }) => {
+    async ({ confirmToken, templateId, newName }) => {
+      requireConfirm(confirmToken, 'rename a template');
       const updated = await client.updateTemplate(templateId, {
         name: newName,
       });
@@ -122,6 +134,7 @@ export function registerTemplateTools(
           .boolean()
           .optional()
           .describe('If true, only print planned changes'),
+        confirmToken: ConfirmTokenSchema.optional(),
         stopOnError: z
           .boolean()
           .optional()
@@ -132,8 +145,17 @@ export function registerTemplateTools(
           .describe('If true, oldName must match exactly one template'),
       }),
     },
-    async ({ renames, dryRun, stopOnError, requireUniqueOldName }) => {
+    async ({
+      renames,
+      dryRun,
+      confirmToken,
+      stopOnError,
+      requireUniqueOldName,
+    }) => {
       const wantDryRun = dryRun ?? false;
+      if (!wantDryRun) {
+        requireConfirm(confirmToken, 'rename templates in bulk');
+      }
       const wantStopOnError = stopOnError ?? false;
       const wantRequireUnique = requireUniqueOldName ?? true;
 
@@ -371,6 +393,7 @@ export function registerTemplateTools(
     {
       description: 'Create a new dynamic template with a first version',
       inputSchema: z.object({
+        confirmToken: ConfirmTokenSchema,
         name: z.string().describe('Template name, e.g. "listing.approved"'),
         versionName: z.string().describe('Version label, e.g. "v1"'),
         subject: z
@@ -381,7 +404,8 @@ export function registerTemplateTools(
           .describe('Full HTML body (supports Handlebars: {{var}})'),
       }),
     },
-    async ({ name, versionName, subject, htmlContent }) => {
+    async ({ confirmToken, name, versionName, subject, htmlContent }) => {
+      requireConfirm(confirmToken, 'create a template');
       const template = await client.createTemplate(name);
       const version = await client.createTemplateVersion(template.id, {
         name: versionName,
@@ -400,7 +424,7 @@ export function registerTemplateTools(
               `Version ID:  ${version.id}`,
               `Active:      yes`,
               ``,
-              `Add to notifications.constants.ts:`,
+              `Add to your template registry:`,
               `  '${name}': '${template.id}',`,
             ].join('\n'),
           },
@@ -414,15 +438,32 @@ export function registerTemplateTools(
     {
       description:
         'Update the HTML, subject, or name of a specific template version',
-      inputSchema: z.object({
-        templateId: z.string().describe('Template ID'),
-        versionId: z.string().describe('Version ID to update'),
-        htmlContent: z.string().optional().describe('New HTML content'),
-        subject: z.string().optional().describe('New email subject'),
-        name: z.string().optional().describe('New version label'),
-      }),
+      inputSchema: z
+        .object({
+          confirmToken: ConfirmTokenSchema,
+          templateId: z.string().describe('Template ID'),
+          versionId: z.string().describe('Version ID to update'),
+          htmlContent: z.string().optional().describe('New HTML content'),
+          subject: z.string().optional().describe('New email subject'),
+          name: z.string().optional().describe('New version label'),
+        })
+        .refine(
+          (value) =>
+            value.htmlContent !== undefined ||
+            value.subject !== undefined ||
+            value.name !== undefined,
+          'Provide at least one of htmlContent, subject, or name.',
+        ),
     },
-    async ({ templateId, versionId, htmlContent, subject, name }) => {
+    async ({
+      confirmToken,
+      templateId,
+      versionId,
+      htmlContent,
+      subject,
+      name,
+    }) => {
+      requireConfirm(confirmToken, 'update a template version');
       const version = await client.updateTemplateVersion(
         templateId,
         versionId,
@@ -449,11 +490,13 @@ export function registerTemplateTools(
       description:
         'Activate a specific version of a template (only one version can be active at a time)',
       inputSchema: z.object({
+        confirmToken: ConfirmTokenSchema,
         templateId: z.string().describe('Template ID'),
         versionId: z.string().describe('Version ID to activate'),
       }),
     },
-    async ({ templateId, versionId }) => {
+    async ({ confirmToken, templateId, versionId }) => {
+      requireConfirm(confirmToken, 'activate a template version');
       const version = await client.activateTemplateVersion(
         templateId,
         versionId,
@@ -470,6 +513,74 @@ export function registerTemplateTools(
   );
 
   server.registerTool(
+    'prune_inactive_template_versions',
+    {
+      description:
+        'Delete all inactive versions for one or more templates (keeps the active version only)',
+      inputSchema: z.object({
+        templateIds: z
+          .array(z.string())
+          .min(1)
+          .describe('SendGrid template IDs to prune'),
+        dryRun: z
+          .boolean()
+          .optional()
+          .describe('Default true. List versions that would be deleted without deleting'),
+        confirmToken: ConfirmTokenSchema.optional(),
+      }),
+    },
+    async ({ templateIds, dryRun = true, confirmToken }) => {
+      if (!dryRun) {
+        requireConfirm(confirmToken, 'delete inactive template versions');
+      }
+      const lines: string[] = [];
+      let deleted = 0;
+      let kept = 0;
+
+      for (const templateId of templateIds) {
+        const template = await client.getTemplate(templateId);
+        const inactive = template.versions.filter((version) => version.active !== 1);
+        const active = template.versions.filter((version) => version.active === 1);
+
+        if (active.length !== 1) {
+          lines.push(
+            `WARN ${template.name} (${templateId}): expected 1 active version, found ${String(active.length)}`,
+          );
+        }
+
+        for (const version of active) {
+          lines.push(`keep active: ${template.name} / ${version.name} (${version.id})`);
+          kept++;
+        }
+
+        for (const version of inactive) {
+          if (dryRun) {
+            lines.push(
+              `would delete: ${template.name} / ${version.name} (${version.id})`,
+            );
+            continue;
+          }
+
+          await client.deleteTemplateVersion(templateId, version.id);
+          lines.push(`deleted: ${template.name} / ${version.name} (${version.id})`);
+          deleted++;
+        }
+      }
+
+      lines.push('');
+      lines.push(
+        dryRun
+          ? `Dry run complete for ${String(templateIds.length)} template(s).`
+          : `Done. kept=${String(kept)} deleted=${String(deleted)}`,
+      );
+
+      return {
+        content: [{ type: 'text', text: lines.join('\n') }],
+      };
+    },
+  );
+
+  server.registerTool(
     'delete_template',
     {
       description:
@@ -481,7 +592,8 @@ export function registerTemplateTools(
           .describe('Safety token required for destructive operations'),
       }),
     },
-    async ({ templateId }) => {
+    async ({ templateId, confirmToken }) => {
+      requireConfirm(confirmToken, 'delete a template');
       await client.deleteTemplate(templateId);
       return {
         content: [{ type: 'text', text: `🗑 Template ${templateId} deleted.` }],

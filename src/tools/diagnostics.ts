@@ -418,9 +418,9 @@ export function registerDiagnosticsTools(
           click,
           dropped,
           friendly_name: friendlyName,
-          oauth_client_id: oauthClientId,
-          oauth_client_secret: oauthClientSecret,
-          oauth_token_url: oauthTokenUrl,
+          oauth_client_id: oauthClientId ?? undefined,
+          oauth_client_secret: oauthClientSecret ?? undefined,
+          oauth_token_url: oauthTokenUrl ?? undefined,
         },
         includeAccountStatusChange ?? false,
       );
@@ -1051,7 +1051,7 @@ export function registerDiagnosticsTools(
     'check_suppression',
     {
       description:
-        'Check if an email address is suppressed (bounced / blocked / unsubscribed / spam reported)',
+        'Check if an email address is suppressed (bounce, block, global unsubscribe, spam report, or invalid email).',
       inputSchema: z.object({
         email: z.string().email().describe('Email address to check'),
       }),
@@ -1061,20 +1061,22 @@ export function registerDiagnosticsTools(
         blocked: z.boolean(),
         unsubscribed: z.boolean(),
         spamReported: z.boolean(),
+        invalidEmail: z.boolean(),
       }),
     },
     async ({ email }) => {
       const result = await client.checkSuppression(email);
 
       const flags = [
-        result.bounced && '🔴 BOUNCED',
-        result.blocked && '🔴 BLOCKED',
-        result.unsubscribed && '🟡 UNSUBSCRIBED',
-        result.spamReported && '🔴 SPAM REPORTED',
+        result.bounced && 'BOUNCED',
+        result.blocked && 'BLOCKED',
+        result.unsubscribed && 'GLOBAL UNSUBSCRIBE',
+        result.spamReported && 'SPAM REPORTED',
+        result.invalidEmail && 'INVALID EMAIL',
       ].filter(Boolean);
 
       const status =
-        flags.length === 0 ? '✅ Clean — not suppressed' : flags.join('  ');
+        flags.length === 0 ? 'Clean - not suppressed' : flags.join(' | ');
 
       const lines = [`Email: ${email}`, `Status: ${status}`, ``];
 
@@ -1092,6 +1094,7 @@ export function registerDiagnosticsTools(
           blocked: result.blocked,
           unsubscribed: result.unsubscribed,
           spamReported: result.spamReported,
+          invalidEmail: result.invalidEmail,
         },
         content: [{ type: 'text', text: lines.join('\n') }],
       };

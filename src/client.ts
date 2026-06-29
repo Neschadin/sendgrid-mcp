@@ -1,4 +1,4 @@
-const SENDGRID_BASE = 'https://api.sendgrid.com/v3';
+const DEFAULT_SENDGRID_BASE = 'https://api.sendgrid.com/v3';
 const MAX_RATE_LIMIT_RETRIES = 3;
 const DEFAULT_RETRY_DELAY_MS = 1000;
 
@@ -502,7 +502,7 @@ export class SendGridClient {
     if (!metadataNext) return undefined;
 
     try {
-      const nextUrl = new URL(metadataNext, SENDGRID_BASE);
+      const nextUrl = new URL(metadataNext, this.baseUrl);
       return nextUrl.searchParams.get('page_token') ?? undefined;
     } catch {
       return undefined;
@@ -510,16 +510,18 @@ export class SendGridClient {
   }
 
   private readonly apiKey: string;
+  private readonly baseUrl: string;
 
-  constructor(apiKey: string) {
+  constructor(apiKey: string, baseUrl = DEFAULT_SENDGRID_BASE) {
     this.apiKey = apiKey;
+    this.baseUrl = baseUrl.replace(/\/+$/u, '');
   }
 
   private buildUrl(
     path: string,
     params?: Record<string, QueryParamValue>,
   ): URL {
-    const url = new URL(`${SENDGRID_BASE}${path}`);
+    const url = new URL(`${this.baseUrl}${path}`);
     if (!params) return url;
 
     for (const [key, value] of Object.entries(params)) {
@@ -721,6 +723,13 @@ export class SendGridClient {
     );
   }
 
+  deleteTemplateVersion(templateId: string, versionId: string): Promise<void> {
+    return this.request<void>(
+      'DELETE',
+      `/templates/${templateId}/versions/${versionId}`,
+    );
+  }
+
   deleteTemplate(templateId: string): Promise<void> {
     return this.request<void>('DELETE', `/templates/${templateId}`);
   }
@@ -755,14 +764,16 @@ export class SendGridClient {
     return this.request<{ batch_id: string }>('POST', '/mail/batch');
   }
 
-  upsertScheduledSend(
+  async upsertScheduledSend(
     batchId: string,
     status: ScheduledSendStatus,
   ): Promise<ScheduledSendState> {
-    return this.request<ScheduledSendState>('POST', '/user/scheduled_sends', {
-      batch_id: batchId,
-      status,
-    });
+    await this.request<void>(
+      'PATCH',
+      `/user/scheduled_sends/${encodeURIComponent(batchId)}`,
+      { status },
+    );
+    return { batch_id: batchId, status };
   }
 
   getScheduledSend(batchId: string): Promise<ScheduledSendState> {
@@ -902,7 +913,7 @@ export class SendGridClient {
   // ─── Suppressions & Delivery Diagnostics ────────────────────────────────────
 
   private suppressionPath(type: SuppressionListType): string {
-    if (type === 'global_unsubscribes') return '/asm/suppressions/global';
+    if (type === 'global_unsubscribes') return '/suppression/unsubscribes';
     return `/suppression/${type}`;
   }
 
@@ -935,38 +946,52 @@ export class SendGridClient {
     blocked: boolean;
     unsubscribed: boolean;
     spamReported: boolean;
+    invalidEmail: boolean;
     details: Record<string, unknown>;
   }> {
     const encoded = encodeURIComponent(email);
-    const [bounces, blocks, unsubscribes, spam] = await Promise.allSettled([
+    const [bounces, blocks, globalUnsubscribe, spam, invalidEmails] =
+      await Promise.allSettled([
       this.request<SuppressionEntry[]>(
         'GET',
         `/suppression/bounces/${encoded}`,
       ),
       this.request<SuppressionEntry[]>('GET', `/suppression/blocks/${encoded}`),
-      this.request<SuppressionEntry[]>(
+      this.request<Record<string, unknown>>(
         'GET',
-        `/suppression/unsubscribes/${encoded}`,
+        `/asm/suppressions/global/${encoded}`,
       ),
       this.request<SuppressionEntry[]>(
         'GET',
         `/suppression/spam_reports/${encoded}`,
       ),
+      this.request<SuppressionEntry[]>(
+        'GET',
+        `/suppression/invalid_emails/${encoded}`,
+      ),
     ]);
 
     const get = (result: PromiseSettledResult<SuppressionEntry[]>) =>
       result.status === 'fulfilled' ? result.value : [];
+    const getObject = (result: PromiseSettledResult<Record<string, unknown>>) =>
+      result.status === 'fulfilled' ? result.value : {};
+    const global = getObject(globalUnsubscribe);
+    const globallyUnsubscribed =
+      typeof global['recipient_email'] === 'string' ||
+      Object.keys(global).length > 0;
 
     return {
       bounced: get(bounces).length > 0,
       blocked: get(blocks).length > 0,
-      unsubscribed: get(unsubscribes).length > 0,
+      unsubscribed: globallyUnsubscribed,
       spamReported: get(spam).length > 0,
+      invalidEmail: get(invalidEmails).length > 0,
       details: {
         bounces: get(bounces),
         blocks: get(blocks),
-        unsubscribes: get(unsubscribes),
+        globalUnsubscribe: global,
         spamReports: get(spam),
+        invalidEmails: get(invalidEmails),
       },
     };
   }

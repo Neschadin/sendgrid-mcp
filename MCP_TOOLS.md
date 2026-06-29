@@ -38,13 +38,13 @@ Out of scope: contact/list marketing CRUD.
 
 ### `rename_template`
 - **Purpose:** Rename one template by template ID.
-- **Inputs:** `templateId`, `newName`.
+- **Inputs:** `confirmToken="CONFIRM"`, `templateId`, `newName`.
 - **Typical flow:** Safe targeted rename.
 - **Caveats:** Changes template display name only.
 
 ### `rename_templates_bulk`
 - **Purpose:** Bulk rename by `templateId` and/or `oldName`.
-- **Inputs:** `renames[]`, optional `dryRun`, `stopOnError`, `requireUniqueOldName`.
+- **Inputs:** `renames[]`, optional `dryRun`, `confirmToken`, `stopOnError`, `requireUniqueOldName`.
 - **Typical flow:** Large naming migrations.
 - **Caveats:** Use `dryRun=true` first on production accounts.
 
@@ -56,31 +56,37 @@ Out of scope: contact/list marketing CRUD.
 
 ### `create_template`
 - **Purpose:** Create a dynamic template with first active version.
-- **Inputs:** `name`, `versionName`, `subject`, `htmlContent`.
+- **Inputs:** `confirmToken="CONFIRM"`, `name`, `versionName`, `subject`, `htmlContent`.
 - **Typical flow:** Bootstrap new notification templates.
 - **Caveats:** Creates both template and version in one operation.
 
 ### `update_template_html`
 - **Purpose:** Update version-level content/subject/name.
-- **Inputs:** `templateId`, `versionId`, optional `htmlContent`, `subject`, `name`.
+- **Inputs:** `confirmToken="CONFIRM"`, `templateId`, `versionId`, optional `htmlContent`, `subject`, `name`.
 - **Typical flow:** Iterative edits to an existing version.
 - **Caveats:** Does not auto-activate version.
 
 ### `activate_template_version`
 - **Purpose:** Activate a template version.
-- **Inputs:** `templateId`, `versionId`.
+- **Inputs:** `confirmToken="CONFIRM"`, `templateId`, `versionId`.
 - **Typical flow:** Release updated template content.
 - **Caveats:** Only one version can be active.
 
+### `prune_inactive_template_versions`
+- **Purpose:** Delete inactive versions for one or more templates, keeping active versions.
+- **Inputs:** `templateIds[]`, optional `dryRun` (default `true`), optional `confirmToken` required when `dryRun=false`.
+- **Typical flow:** Cleanup after template version migrations.
+- **Caveats:** Destructive when `dryRun=false`; use dry-run first.
+
 ### `delete_template`
 - **Purpose:** Permanently delete a template.
-- **Inputs:** `templateId`.
+- **Inputs:** `confirmToken="CONFIRM"`, `templateId`.
 - **Typical flow:** Cleanup unused templates.
 - **Caveats:** Irreversible.
 
 ### `sync_template_ids`
 - **Purpose:** Compare local `SENDGRID_TEMPLATES` constants with live SendGrid templates.
-- **Inputs:** optional `constantsPath`.
+- **Inputs:** `constantsPath`.
 - **Typical flow:** Keep backend constants aligned with real template IDs.
 - **Caveats:** Local constants parsing is regex-based.
 
@@ -115,10 +121,10 @@ Out of scope: contact/list marketing CRUD.
 - **Caveats:** No recipient delivery occurs.
 
 ### `send_test_email`
-- **Purpose:** Thin convenience wrapper for template test send.
-- **Inputs:** `to`, `templateId`, `mockData`, optional from override.
+- **Purpose:** Thin convenience wrapper for template test send; sandbox mode is used by default.
+- **Inputs:** `to`, `templateId`, `mockData`, optional from override, optional `liveDelivery` + `confirmToken="CONFIRM"`.
 - **Typical flow:** Quick manual smoke tests.
-- **Caveats:** Limited surface vs advanced tools.
+- **Caveats:** No live delivery occurs unless `liveDelivery=true` and `confirmToken` is provided.
 
 ### `create_batch_id`
 - **Purpose:** Create batch ID for scheduling controls.
@@ -130,23 +136,23 @@ Out of scope: contact/list marketing CRUD.
 - **Purpose:** Schedule send (`send_at`) with optional batch auto-create.
 - **Inputs:** `request`, `sendAt`, optional `batchId`, `autoCreateBatchId`.
 - **Typical flow:** Deferred delivery and pacing.
-- **Caveats:** `sendAt` must be in the future.
+- **Caveats:** `sendAt` must be in the future and within SendGrid's 72-hour scheduling window.
 
 ### `pause_scheduled_send`
 - **Purpose:** Pause scheduled batch.
-- **Inputs:** `batchId`.
+- **Inputs:** `confirmToken="CONFIRM"`, `batchId`.
 - **Typical flow:** Temporary stop before campaign window.
 - **Caveats:** Requires valid existing batch state.
 
 ### `resume_scheduled_send`
 - **Purpose:** Resume by removing pause/cancel state.
-- **Inputs:** `batchId`.
+- **Inputs:** `confirmToken="CONFIRM"`, `batchId`.
 - **Typical flow:** Continue paused/canceled batch.
 - **Caveats:** Behavior is API `DELETE` of scheduled-send state entry.
 
 ### `cancel_scheduled_send`
 - **Purpose:** Cancel scheduled batch.
-- **Inputs:** `batchId`.
+- **Inputs:** `confirmToken="CONFIRM"`, `batchId`.
 - **Typical flow:** Emergency stop.
 - **Caveats:** Near-send-time cancellation is not guaranteed by SendGrid.
 
@@ -178,10 +184,10 @@ Out of scope: contact/list marketing CRUD.
 - **Purpose:** Enumerate suppression entries by type.
 - **Inputs:** `type`, optional pagination/time/email filters.
 - **Typical flow:** Bulk suppression audits.
-- **Caveats:** Does not mutate suppression lists.
+- **Caveats:** Does not mutate suppression lists. `global_unsubscribes` is an alias for SendGrid global unsubscribe listing.
 
 ### `check_suppression`
-- **Purpose:** Check suppression flags for one recipient.
+- **Purpose:** Check bounce, block, global unsubscribe, spam report, and invalid-email suppression flags for one recipient.
 - **Inputs:** `email`.
 - **Typical flow:** Per-recipient delivery triage.
 - **Caveats:** Focused lookup only.
@@ -270,6 +276,7 @@ All mutating tools require `confirmToken: "CONFIRM"`.
 
 - `create_verified_sender` / `resend_verified_sender_verification` / `delete_verified_sender`
 - `create_authenticated_domain` / `validate_authenticated_domain` / `validate_branded_link`
+- `update_branded_link`
 - `create_alert` / `update_alert` / `delete_alert`
 - `update_mail_setting` — PATCH `/mail_settings/{name}`
 - `update_tracking_setting` — PATCH `/tracking_settings/{name}`
@@ -314,6 +321,7 @@ Tool risk classification:
 - `create_template`: `mutates-sendgrid`
 - `update_template_html`: `mutates-sendgrid`
 - `activate_template_version`: `mutates-sendgrid`
+- `prune_inactive_template_versions`: `mutates-sendgrid`
 - `delete_template`: `mutates-sendgrid`
 - `sync_template_ids`: `read-only`
 - `validate_send_request`: `read-only`
@@ -364,6 +372,7 @@ Tool risk classification:
 - `create_authenticated_domain`: `mutates-sendgrid`
 - `validate_authenticated_domain`: `mutates-sendgrid`
 - `validate_branded_link`: `mutates-sendgrid`
+- `update_branded_link`: `mutates-sendgrid`
 - `create_alert`: `mutates-sendgrid`
 - `update_alert`: `mutates-sendgrid`
 - `delete_alert`: `mutates-sendgrid`

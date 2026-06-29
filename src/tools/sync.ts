@@ -3,9 +3,6 @@ import { z } from 'zod';
 import type { SendGridClient } from '../client';
 import { ensureSafeToolRegistration } from './tool_utils';
 
-const DEFAULT_CONSTANTS_PATH =
-  '/Users/oleksandrn/P/Kennitalan-BE/src/notifications/notifications.constants.ts';
-
 /**
  * Parse SENDGRID_TEMPLATES object from the source file.
  * Returns a map of eventKey → templateId.
@@ -36,26 +33,26 @@ export function registerSyncTools(server: McpServer, client: SendGridClient) {
     'sync_template_ids',
     {
       description: [
-        'Read SENDGRID_TEMPLATES from notifications.constants.ts and compare with real templates in SendGrid.',
+        'Read a TypeScript/JavaScript file containing a SENDGRID_TEMPLATES object and compare it with real templates in SendGrid.',
         'Reports: which IDs are placeholder (d-xxx), which do not exist in SendGrid, and which are real.',
-        'Optionally provide a custom path to the constants file.',
+        'This is an opt-in local sync helper; provide constantsPath explicitly.',
       ].join(' '),
       inputSchema: z.object({
         constantsPath: z
           .string()
-          .optional()
+          .min(1)
           .describe(
-            `Absolute path to notifications.constants.ts (default: ${DEFAULT_CONSTANTS_PATH})`,
+            'Absolute path to a local file that exports or defines SENDGRID_TEMPLATES.',
           ),
       }),
     },
     async ({ constantsPath }) => {
-      const filePath = constantsPath ?? DEFAULT_CONSTANTS_PATH;
+      const filePath = constantsPath;
       const file = Bun.file(filePath);
 
       if (!(await file.exists())) {
         return {
-          content: [{ type: 'text', text: `❌ File not found: ${filePath}` }],
+          content: [{ type: 'text', text: `File not found: ${filePath}` }],
         };
       }
 
@@ -67,7 +64,7 @@ export function registerSyncTools(server: McpServer, client: SendGridClient) {
           content: [
             {
               type: 'text',
-              text: `⚠️ Could not parse SENDGRID_TEMPLATES from ${filePath}`,
+              text: `Could not parse SENDGRID_TEMPLATES from ${filePath}`,
             },
           ],
         };
@@ -88,7 +85,7 @@ export function registerSyncTools(server: McpServer, client: SendGridClient) {
 
       for (const [key, id] of Object.entries(localMap)) {
         if (isPlaceholder(id)) {
-          rows.push(`🔴 PLACEHOLDER  '${key}': '${id}'`);
+          rows.push(`PLACEHOLDER  '${key}': '${id}'`);
           placeholderCount++;
           continue;
         }
@@ -96,13 +93,13 @@ export function registerSyncTools(server: McpServer, client: SendGridClient) {
         const sgTemplate = sgById.get(id);
         if (!sgTemplate) {
           rows.push(
-            `🟡 NOT IN SG    '${key}': '${id}'  (ID not found in your SendGrid account)`,
+            `NOT IN SENDGRID  '${key}': '${id}'  (ID not found in your SendGrid account)`,
           );
           missingCount++;
         } else {
           const active = sgTemplate.versions.find((v) => v.active === 1);
           rows.push(
-            `✅ OK           '${key}': '${id}'  → "${sgTemplate.name}" (active: "${active?.subject ?? '—'}")`,
+            `OK  '${key}': '${id}' -> "${sgTemplate.name}" (active: "${active?.subject ?? 'none'}")`,
           );
           okCount++;
         }
@@ -115,7 +112,7 @@ export function registerSyncTools(server: McpServer, client: SendGridClient) {
       const summary = [
         `File: ${filePath}`,
         ``,
-        `Summary: ${okCount} ✅ ok  |  ${placeholderCount} 🔴 placeholder  |  ${missingCount} 🟡 id-not-found`,
+        `Summary: ${okCount} ok | ${placeholderCount} placeholder | ${missingCount} id-not-found`,
         ``,
         ...rows,
       ];
@@ -123,7 +120,7 @@ export function registerSyncTools(server: McpServer, client: SendGridClient) {
       if (unreferenced.length > 0) {
         summary.push(
           ``,
-          `── Templates in SendGrid not referenced in constants ──`,
+          `Templates in SendGrid not referenced in constants`,
         );
         for (const t of unreferenced) {
           summary.push(`  [${t.id}] "${t.name}"`);

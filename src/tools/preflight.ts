@@ -15,6 +15,9 @@ const PROVIDER_FREE_FROM_DOMAINS = new Set([
   'hotmail.com',
   'icloud.com',
 ]);
+const MAX_PERSONALIZATIONS = 1000;
+const MAX_CATEGORIES = 10;
+const MAX_SEND_AT_SECONDS_AHEAD = 72 * 60 * 60;
 
 const EmailAddressSchema = z.object({
   email: z.string().email(),
@@ -221,6 +224,61 @@ export async function runSendPreflight(
   options: PreflightOptions,
 ): Promise<PreflightReport> {
   const issues: PreflightIssue[] = [];
+  const now = Math.floor(Date.now() / 1000);
+
+  if (request.personalizations.length > MAX_PERSONALIZATIONS) {
+    pushIssue(
+      issues,
+      'blocker',
+      'TOO_MANY_PERSONALIZATIONS',
+      `SendGrid allows at most ${MAX_PERSONALIZATIONS} personalizations per /mail/send request.`,
+    );
+  }
+
+  if ((request.categories?.length ?? 0) > MAX_CATEGORIES) {
+    pushIssue(
+      issues,
+      'blocker',
+      'TOO_MANY_CATEGORIES',
+      `SendGrid allows at most ${MAX_CATEGORIES} categories per /mail/send request.`,
+    );
+  }
+
+  const sendAtValues = [
+    request.sendAt,
+    ...request.personalizations.map((p) => p.sendAt),
+  ].filter((value): value is number => typeof value === 'number');
+  for (const sendAt of sendAtValues) {
+    if (sendAt <= now) {
+      pushIssue(
+        issues,
+        'blocker',
+        'SEND_AT_NOT_IN_FUTURE',
+        `send_at must be in the future. Received ${sendAt}, current timestamp is ${now}.`,
+      );
+    } else if (sendAt > now + MAX_SEND_AT_SECONDS_AHEAD) {
+      pushIssue(
+        issues,
+        'blocker',
+        'SEND_AT_TOO_FAR_AHEAD',
+        'SendGrid scheduled sends must be within 72 hours of submission.',
+      );
+    }
+  }
+
+  const bypassListManagement = request.mailSettings?.['bypass_list_management'];
+  if (
+    typeof bypassListManagement === 'object' &&
+    bypassListManagement !== null &&
+    (bypassListManagement as Record<string, unknown>)['enable'] === true
+  ) {
+    pushIssue(
+      issues,
+      'warning',
+      'BYPASS_LIST_MANAGEMENT_ENABLED',
+      'mail_settings.bypass_list_management.enable=true can bypass unsubscribe/suppression safeguards.',
+    );
+  }
 
   // Each personalization block must not repeat the same address across to/cc/bcc.
   request.personalizations.forEach((personalization, index) => {
@@ -367,6 +425,17 @@ export async function runSendPreflight(
 
   if (options.checkSenderIdentity) {
     try {
+      const recipients = new Set<string>();
+      for (const personalization of request.personalizations) {
+        for (const recipient of [
+          ...(personalization.to ?? []),
+          ...(personalization.cc ?? []),
+          ...(personalization.bcc ?? []),
+        ]) {
+          recipients.add(normalizeEmail(recipient.email));
+        }
+      }
+
       const [domains, senders, links] = await Promise.all([
         client.listAuthenticatedDomains(),
         client.listVerifiedSenders({ limit: 200 }),
@@ -430,6 +499,50 @@ export async function runSendPreflight(
           'LINK_BRANDING_DOMAIN_MISMATCH',
           `From domain ${senderDomain} is not aligned with current branded-link domains.`,
         );
+      }
+
+      for (const recipient of recipients) {
+        const suppression = await client.checkSuppression(recipient);
+        if (suppression.bounced) {
+          pushIssue(
+            issues,
+            'blocker',
+            'RECIPIENT_BOUNCED',
+            `Recipient ${recipient} is on the bounce suppression list.`,
+          );
+        }
+        if (suppression.blocked) {
+          pushIssue(
+            issues,
+            'blocker',
+            'RECIPIENT_BLOCKED',
+            `Recipient ${recipient} is on the block suppression list.`,
+          );
+        }
+        if (suppression.invalidEmail) {
+          pushIssue(
+            issues,
+            'blocker',
+            'RECIPIENT_INVALID_EMAIL',
+            `Recipient ${recipient} is on the invalid email suppression list.`,
+          );
+        }
+        if (suppression.unsubscribed) {
+          pushIssue(
+            issues,
+            'warning',
+            'RECIPIENT_GLOBAL_UNSUBSCRIBE',
+            `Recipient ${recipient} is globally unsubscribed.`,
+          );
+        }
+        if (suppression.spamReported) {
+          pushIssue(
+            issues,
+            'warning',
+            'RECIPIENT_SPAM_REPORTED',
+            `Recipient ${recipient} has a spam-report suppression.`,
+          );
+        }
       }
     } catch (error) {
       pushIssue(

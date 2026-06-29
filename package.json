@@ -35,10 +35,11 @@
     "start": "bun src/index.ts",
     "build": "bun build --compile src/index.ts --outfile bin/sendgrid",
     "build:release": "bash scripts/build-release.sh",
-    "inspect": "npx @modelcontextprotocol/inspector bun src/index.ts",
+    "inspect": "bunx @modelcontextprotocol/inspector bun src/index.ts",
     "typecheck": "bun build src/index.ts --outdir .tmp-typecheck --target bun",
     "typecheck:tsc": "NODE_OPTIONS=--max-old-space-size=8192 tsc --noEmit --skipLibCheck",
-    "lint": "oxlint"
+    "lint": "oxlint",
+    "smoke": "bun run scripts/smoke-register-tools.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",

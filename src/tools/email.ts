@@ -1,8 +1,16 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { SendGridClient } from '../client';
-import { SendRequestSchema, toMailSendPayload } from './preflight';
+import {
+  SendRequestSchema,
+  runSendPreflight,
+  toMailSendPayload,
+} from './preflight';
 import { ensureSafeToolRegistration } from './tool_utils';
+
+const ConfirmTokenSchema = z
+  .literal('CONFIRM')
+  .describe('Required for mutating scheduled-send state');
 
 export function registerEmailTools(
   server: McpServer,
@@ -211,6 +219,12 @@ export function registerEmailTools(
           `sendAt must be in the future. Received ${sendAt}, now is ${now}.`,
         );
       }
+      const maxSendAt = now + 72 * 60 * 60;
+      if (sendAt > maxSendAt) {
+        throw new Error(
+          `sendAt must be within 72 hours. Received ${sendAt}, max is ${maxSendAt}.`,
+        );
+      }
 
       let effectiveBatchId = batchId;
       if (!effectiveBatchId && (autoCreateBatchId ?? true)) {
@@ -249,6 +263,7 @@ export function registerEmailTools(
     {
       description: 'Pause a scheduled send batch by batch ID.',
       inputSchema: z.object({
+        confirmToken: ConfirmTokenSchema,
         batchId: z.string(),
       }),
     },
@@ -271,6 +286,7 @@ export function registerEmailTools(
       description:
         'Resume a previously paused/canceled batch by deleting its scheduled-send status.',
       inputSchema: z.object({
+        confirmToken: ConfirmTokenSchema,
         batchId: z.string(),
       }),
     },
@@ -293,6 +309,7 @@ export function registerEmailTools(
       description:
         'Cancel a scheduled send batch. This is not guaranteed close to send time.',
       inputSchema: z.object({
+        confirmToken: ConfirmTokenSchema,
         batchId: z.string(),
       }),
     },
@@ -320,7 +337,7 @@ export function registerEmailTools(
         mockData: z
           .record(z.unknown())
           .describe(
-            'Mock dynamic template data as JSON, e.g. {"listingTitle":"Test Co","siteUrl":"https://kennitalan.is"}',
+            'Mock dynamic template data as JSON, e.g. {"customerName":"Test User","siteUrl":"https://example.com"}',
           ),
         fromEmail: z
           .string()
@@ -328,29 +345,87 @@ export function registerEmailTools(
           .optional()
           .describe('Override sender email'),
         fromName: z.string().optional().describe('Override sender name'),
+        liveDelivery: z
+          .boolean()
+          .optional()
+          .describe('Default false. If true, sends live mail instead of sandbox mode.'),
+        confirmToken: ConfirmTokenSchema.optional(),
       }),
     },
-    async ({ to, templateId, mockData, fromEmail, fromName }) => {
-      const result = await client.sendMail({
+    async ({
+      to,
+      templateId,
+      mockData,
+      fromEmail,
+      fromName,
+      liveDelivery = false,
+      confirmToken,
+    }) => {
+      if (liveDelivery && confirmToken !== 'CONFIRM') {
+        throw new Error(
+          'Set confirmToken="CONFIRM" with liveDelivery=true to send a live test email.',
+        );
+      }
+
+      const request = {
         personalizations: [
           {
             to: [{ email: to }],
-            dynamic_template_data: mockData as Record<string, unknown>,
+            dynamicTemplateData: mockData as Record<string, unknown>,
           },
         ],
         from: {
           email: fromEmail ?? defaultFromEmail,
           name: fromName ?? defaultFromName,
         },
-        template_id: templateId,
+        templateId,
+      };
+      const report = await runSendPreflight(client, request, {
+        checkSenderIdentity: true,
       });
+      if (!report.ok) {
+        return {
+          structuredContent: {
+            sent: false,
+            sandbox: !liveDelivery,
+            report,
+            statusCode: null,
+            messageId: null,
+          },
+          content: [
+            {
+              type: 'text',
+              text: 'Test email skipped because preflight found blockers.',
+            },
+          ],
+        };
+      }
+
+      const payload = toMailSendPayload(request);
+      if (!liveDelivery) {
+        payload.mail_settings = {
+          ...payload.mail_settings,
+          sandbox_mode: { enable: true },
+        };
+      }
+
+      const result = await client.sendMail(payload);
 
       return {
+        structuredContent: {
+          sent: true,
+          sandbox: !liveDelivery,
+          report,
+          statusCode: result.statusCode,
+          messageId: result.messageId || null,
+        },
         content: [
           {
             type: 'text',
             text: [
-              `✅ Test email sent`,
+              liveDelivery
+                ? 'Live test email accepted by SendGrid.'
+                : 'Sandbox test email accepted by SendGrid (no live delivery).',
               `To:         ${to}`,
               `Template:   ${templateId}`,
               `Status:     ${result.statusCode}`,

@@ -10,6 +10,8 @@ MCP server for [Twilio SendGrid](https://sendgrid.com): transactional email with
 
 Contact/list marketing CRUD is intentionally out of scope.
 
+This project is community-maintained and is not affiliated with, endorsed by, or sponsored by Twilio SendGrid.
+
 ## Features
 
 - **Safe send** — `validate_send_request`, `send_with_preflight`, sandbox mode
@@ -30,6 +32,7 @@ Download the binary for your OS from [GitHub Releases](https://github.com/Nescha
 | Linux arm64 | `sendgrid-linux-arm64` |
 | macOS Intel | `sendgrid-darwin-x64` |
 | macOS Apple Silicon | `sendgrid-darwin-arm64` |
+| Windows x64 | `sendgrid-windows-x64.exe` |
 
 ```bash
 chmod +x sendgrid-linux-x64
@@ -60,6 +63,8 @@ Each user runs the server locally with **their own** API key (bring-your-own-key
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SENDGRID_FROM_NAME` | `SendGrid MCP` | Default From display name |
+| `SENDGRID_REGION` | `global` | Use `eu` for `https://api.eu.sendgrid.com/v3` |
+| `SENDGRID_API_BASE_URL` | `https://api.sendgrid.com/v3` | Full SendGrid API base URL override |
 | `SENDGRID_MCP_LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` |
 
 ### Optional: local Event Webhook receiver
@@ -78,6 +83,10 @@ Enabled only when `SENDGRID_EVENT_WEBHOOK_PORT` is set.
 | `SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY` | — (required if signature enforced) |
 
 Point SendGrid Event Webhook URL to your tunnel, e.g. `https://<ngrok-host>/sendgrid/events`. Inspect events via MCP tools `get_received_webhook_events` / `get_webhook_receiver_status`.
+
+For public tunnels, prefer signed webhook verification:
+`SENDGRID_EVENT_WEBHOOK_REQUIRE_SIGNATURE=true` and
+`SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY=<SendGrid public key>`.
 
 ## MCP client setup
 
@@ -139,6 +148,7 @@ bun run build        # compile → bin/sendgrid (local platform)
 ./scripts/build-release.sh   # all release targets → dist/
 bun run lint
 bun run typecheck
+bun run smoke
 ```
 
 ### MCP Inspector

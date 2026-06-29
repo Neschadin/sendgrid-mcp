@@ -20,6 +20,7 @@ const REQUIRED_ENV = ['SENDGRID_API_KEY', 'SENDGRID_FROM_EMAIL'] as const;
 
 function getEnv(): {
   apiKey: string;
+  apiBaseUrl: string;
   fromEmail: string;
   fromName: string;
 } {
@@ -33,8 +34,13 @@ function getEnv(): {
   }
   return {
     apiKey: env['SENDGRID_API_KEY']!,
+    apiBaseUrl:
+      env['SENDGRID_API_BASE_URL'] ??
+      (env['SENDGRID_REGION'] === 'eu'
+        ? 'https://api.eu.sendgrid.com/v3'
+        : 'https://api.sendgrid.com/v3'),
     fromEmail: env['SENDGRID_FROM_EMAIL']!,
-    fromName: env['SENDGRID_FROM_NAME'] ?? 'Kennitalan',
+    fromName: env['SENDGRID_FROM_NAME'] ?? 'SendGrid MCP',
   };
 }
 
@@ -45,7 +51,7 @@ async function main() {
   } catch (error) {
     logWarn(`Webhook receiver not started: ${String(error)}`);
   }
-  const client = new SendGridClient(env.apiKey);
+  const client = new SendGridClient(env.apiKey, env.apiBaseUrl);
 
   const server = new McpServer({
     name: 'sendgrid',

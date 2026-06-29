@@ -13,7 +13,26 @@ export function formatToolError(error: unknown): string {
       error.errors.length > 0
         ? `\n${error.errors.map((entry) => `- ${entry.message}`).join('\n')}`
         : '';
-    return `SendGrid API error (${error.status}) on ${error.method} ${error.path}.${details}`;
+    const hints: string[] = [];
+    if (error.status === 401) {
+      hints.push('Check that SENDGRID_API_KEY is valid and has not been revoked.');
+    }
+    if (error.status === 403) {
+      hints.push(
+        'Check API key scopes for this endpoint and whether the account/plan can access it.',
+      );
+    }
+    if (error.status === 404) {
+      hints.push('Check the resource ID, endpoint region, and account/subuser context.');
+    }
+    if (error.status === 429) {
+      hints.push('SendGrid rate-limited the request; retry later or reduce request rate.');
+    }
+    const hintText =
+      hints.length > 0
+        ? `\nNext steps:\n${hints.map((hint) => `- ${hint}`).join('\n')}`
+        : '';
+    return `SendGrid API error (${error.status}) on ${error.method} ${error.path}.${details}${hintText}`;
   }
 
   if (error instanceof Error) return error.message;
@@ -28,6 +47,52 @@ function titleFromName(name: string): string {
     .filter(Boolean)
     .map((chunk) => chunk[0]?.toUpperCase() + chunk.slice(1))
     .join(' ');
+}
+
+function inferAnnotations(name: string, config: Record<string, unknown>) {
+  if (config['annotations'] !== undefined) return config['annotations'];
+
+  const mutatingPrefixes = [
+    'activate_',
+    'cancel_',
+    'clear_',
+    'create_',
+    'delete_',
+    'pause_',
+    'prune_',
+    'rename_',
+    'resume_',
+    'schedule_',
+    'send_',
+    'toggle_',
+    'update_',
+  ];
+  const destructivePrefixes = ['cancel_', 'clear_', 'delete_', 'prune_'];
+  const readOnlyPrefixes = [
+    'analyze_',
+    'check_',
+    'classify_',
+    'get_',
+    'list_',
+    'search_',
+    'sync_',
+    'triage_',
+    'validate_send_request',
+  ];
+
+  const mutating = mutatingPrefixes.some((prefix) => name.startsWith(prefix));
+  const destructive = destructivePrefixes.some((prefix) =>
+    name.startsWith(prefix),
+  );
+  const readOnly =
+    !mutating && readOnlyPrefixes.some((prefix) => name.startsWith(prefix));
+
+  return {
+    readOnlyHint: readOnly,
+    destructiveHint: destructive,
+    idempotentHint: readOnly,
+    openWorldHint: true,
+  };
 }
 
 export function ensureSafeToolRegistration(server: McpServer) {
@@ -50,6 +115,10 @@ export function ensureSafeToolRegistration(server: McpServer) {
             title:
               (config as Record<string, unknown>)['title'] ??
               titleFromName(name),
+            annotations: inferAnnotations(
+              name,
+              config as Record<string, unknown>,
+            ),
           }
         : config,
       async (args: unknown, extra: unknown) => {
