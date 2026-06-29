@@ -2,6 +2,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { SendGridClient } from '../client';
 import { SendRequestSchema, toMailSendPayload } from './preflight';
+import { ensureSafeToolRegistration } from './tool_utils';
 
 export function registerEmailTools(
   server: McpServer,
@@ -9,6 +10,7 @@ export function registerEmailTools(
   defaultFromEmail: string,
   defaultFromName: string,
 ) {
+  ensureSafeToolRegistration(server);
   const RecipientSchema = z.object({
     email: z.string().email(),
     name: z.string().optional(),
@@ -148,7 +150,7 @@ export function registerEmailTools(
     async ({ request }) => {
       const payload = toMailSendPayload(request);
       payload.mail_settings = {
-        ...(payload.mail_settings ?? {}),
+        ...payload.mail_settings,
         sandbox_mode: { enable: true },
       };
 
@@ -175,7 +177,7 @@ export function registerEmailTools(
     {
       description:
         'Create a SendGrid batch ID for scheduled sends and later pause/cancel control.',
-      inputSchema: {},
+      inputSchema: z.object({}),
     },
     async () => {
       const batch = await client.createBatchId();

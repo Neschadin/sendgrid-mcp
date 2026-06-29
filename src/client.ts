@@ -1,4 +1,6 @@
 const SENDGRID_BASE = 'https://api.sendgrid.com/v3';
+const MAX_RATE_LIMIT_RETRIES = 3;
+const DEFAULT_RETRY_DELAY_MS = 1000;
 
 type QueryParamValue = string | number | boolean | undefined;
 
@@ -65,6 +67,22 @@ function parseSendGridErrorDetails(rawBody: string): SendGridErrorDetail[] {
   }
 
   return [{ message: trimmed }];
+}
+
+function parseRetryAfterMs(value: string | null): number | undefined {
+  if (!value) return undefined;
+
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.max(0, Math.round(seconds * 1000));
+  }
+
+  const dateMs = Date.parse(value);
+  if (!Number.isNaN(dateMs)) {
+    return Math.max(0, dateMs - Date.now());
+  }
+
+  return undefined;
 }
 
 export class SendGridApiError extends Error {
@@ -330,7 +348,167 @@ export interface GlobalStats {
   }>;
 }
 
+export interface UserAccount {
+  type?: string;
+  reputation?: number;
+  [key: string]: unknown;
+}
+
+export interface UserProfile {
+  company?: string;
+  first_name?: string;
+  last_name?: string;
+  address?: string;
+  address2?: string;
+  city?: string;
+  state?: string;
+  zip?: string;
+  country?: string;
+  phone?: string;
+  website?: string;
+  [key: string]: unknown;
+}
+
+export interface UserCredits {
+  remain?: number;
+  total?: number;
+  used?: number;
+  overage?: number;
+  [key: string]: unknown;
+}
+
+export interface MailSettingSummary {
+  title?: string;
+  name?: string;
+  enabled?: boolean;
+  [key: string]: unknown;
+}
+
+export interface MailSettingsListResponse {
+  result?: MailSettingSummary[];
+  [key: string]: unknown;
+}
+
+export type MailSettingName =
+  | 'address_whitelist'
+  | 'bcc'
+  | 'bounce_purge'
+  | 'footer'
+  | 'forward_bounce'
+  | 'forward_spam'
+  | 'plain_content'
+  | 'spam_check'
+  | 'template';
+
+export type TrackingSettingName =
+  | 'click'
+  | 'open'
+  | 'subscription'
+  | 'google_analytics';
+
+export interface TrackingSettingSummary {
+  name?: string;
+  title?: string;
+  description?: string;
+  enabled?: boolean;
+  [key: string]: unknown;
+}
+
+export interface TrackingSettingsListResponse {
+  result?: TrackingSettingSummary[];
+  [key: string]: unknown;
+}
+
+export interface SendGridAlert {
+  id: number;
+  type: 'usage_limit' | 'stats_notification' | string;
+  email_to?: string;
+  frequency?: 'daily' | 'weekly' | 'monthly' | string;
+  percentage?: number;
+  created_at?: number;
+  updated_at?: number;
+  [key: string]: unknown;
+}
+
+export interface InboundParseSetting {
+  url: string;
+  hostname: string;
+  spam_check?: boolean;
+  send_raw?: boolean;
+  [key: string]: unknown;
+}
+
+export interface CreateVerifiedSenderPayload {
+  nickname: string;
+  from_email: string;
+  reply_to: string;
+  from_name?: string;
+  reply_to_name?: string;
+  address?: string;
+  address2?: string;
+  state?: string;
+  city?: string;
+  country?: string;
+  zip?: string;
+}
+
+export interface CreateAuthenticatedDomainPayload {
+  domain: string;
+  subdomain?: string;
+  username?: string;
+  ips?: string[];
+  custom_spf?: boolean;
+  default?: boolean;
+  automatic_security?: boolean;
+  custom_dkim_selector?: string;
+  region?: 'global' | 'eu';
+}
+
+export interface UpdateBrandedLinkPayload {
+  default?: boolean;
+  subdomain?: string;
+}
+
+export interface CreateAlertPayload {
+  type: 'usage_limit' | 'stats_notification';
+  email_to?: string;
+  frequency?: 'daily' | 'weekly' | 'monthly';
+  percentage?: number;
+}
+
+export interface UpdateAlertPayload {
+  type?: 'usage_limit' | 'stats_notification';
+  email_to?: string;
+  frequency?: 'daily' | 'weekly' | 'monthly';
+  percentage?: number;
+}
+
+export interface CreateInboundParsePayload {
+  url: string;
+  hostname: string;
+  spam_check?: boolean;
+  send_raw?: boolean;
+}
+
+export interface UpdateInboundParsePayload {
+  url?: string;
+  hostname?: string;
+  spam_check?: boolean;
+  send_raw?: boolean;
+}
+
 export class SendGridClient {
+  private parseNextPageToken(metadataNext?: string): string | undefined {
+    if (!metadataNext) return undefined;
+
+    try {
+      const nextUrl = new URL(metadataNext, SENDGRID_BASE);
+      return nextUrl.searchParams.get('page_token') ?? undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   private readonly apiKey: string;
 
   constructor(apiKey: string) {
@@ -360,24 +538,43 @@ export class SendGridClient {
     params?: Record<string, QueryParamValue>,
   ): Promise<Response> {
     const url = this.buildUrl(path, params);
-    const res = await fetch(url.toString(), {
-      method,
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-    });
 
-    if (res.ok) return res;
+    for (let attempt = 0; attempt <= MAX_RATE_LIMIT_RETRIES; attempt++) {
+      const res = await fetch(url.toString(), {
+        method,
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+      });
 
-    const rawBody = await res.text();
+      if (res.ok) return res;
+
+      if (res.status === 429 && attempt < MAX_RATE_LIMIT_RETRIES) {
+        const retryDelay =
+          parseRetryAfterMs(res.headers.get('retry-after')) ??
+          DEFAULT_RETRY_DELAY_MS * (attempt + 1);
+        await Bun.sleep(retryDelay);
+        continue;
+      }
+
+      const rawBody = await res.text();
+      throw new SendGridApiError({
+        status: res.status,
+        method,
+        path,
+        errors: parseSendGridErrorDetails(rawBody),
+        rawBody,
+      });
+    }
+
     throw new SendGridApiError({
-      status: res.status,
+      status: 429,
       method,
       path,
-      errors: parseSendGridErrorDetails(rawBody),
-      rawBody,
+      errors: [{ message: 'Rate limit retry attempts exhausted.' }],
+      rawBody: '',
     });
   }
 
@@ -411,11 +608,28 @@ export class SendGridClient {
 
   // ─── Templates ──────────────────────────────────────────────────────────────
 
-  listTemplates(pageSize = 50): Promise<TemplateListResponse> {
+  listTemplates(
+    pageSize = 50,
+    pageToken?: string,
+  ): Promise<TemplateListResponse> {
     return this.request<TemplateListResponse>('GET', '/templates', undefined, {
       generations: 'dynamic',
       page_size: pageSize,
+      page_token: pageToken,
     });
+  }
+
+  async listAllDynamicTemplates(pageSize = 200): Promise<Template[]> {
+    const all: Template[] = [];
+    let nextPageToken: string | undefined;
+
+    do {
+      const page = await this.listTemplates(pageSize, nextPageToken);
+      all.push(...(page.result ?? []));
+      nextPageToken = this.parseNextPageToken(page._metadata?.next);
+    } while (nextPageToken);
+
+    return all;
   }
 
   getTemplate(templateId: string): Promise<Template> {
@@ -763,5 +977,235 @@ export class SendGridClient {
       aggregated_by: 'day',
       end_date: endDate,
     });
+  }
+
+  // ─── Account & User ─────────────────────────────────────────────────────────
+
+  getUserAccount(): Promise<UserAccount> {
+    return this.request<UserAccount>('GET', '/user/account');
+  }
+
+  getUserProfile(): Promise<UserProfile> {
+    return this.request<UserProfile>('GET', '/user/profile');
+  }
+
+  getUserCredits(): Promise<UserCredits> {
+    return this.request<UserCredits>('GET', '/user/credits');
+  }
+
+  // ─── Mail & Tracking Settings ─────────────────────────────────────────────────
+
+  listMailSettings(params?: {
+    limit?: number;
+    offset?: number;
+  }): Promise<MailSettingsListResponse> {
+    return this.request<MailSettingsListResponse>(
+      'GET',
+      '/mail_settings',
+      undefined,
+      {
+        limit: params?.limit,
+        offset: params?.offset,
+      },
+    );
+  }
+
+  getMailSetting(name: MailSettingName): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>(
+      'GET',
+      `/mail_settings/${encodeURIComponent(name)}`,
+    );
+  }
+
+  updateMailSetting(
+    name: MailSettingName,
+    payload: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>(
+      'PATCH',
+      `/mail_settings/${encodeURIComponent(name)}`,
+      payload,
+    );
+  }
+
+  listTrackingSettings(): Promise<TrackingSettingsListResponse> {
+    return this.request<TrackingSettingsListResponse>(
+      'GET',
+      '/tracking_settings',
+    );
+  }
+
+  getTrackingSetting(
+    name: TrackingSettingName,
+  ): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>(
+      'GET',
+      `/tracking_settings/${encodeURIComponent(name)}`,
+    );
+  }
+
+  updateTrackingSetting(
+    name: TrackingSettingName,
+    payload: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>(
+      'PATCH',
+      `/tracking_settings/${encodeURIComponent(name)}`,
+      payload,
+    );
+  }
+
+  // ─── Sender Identities & Domain Auth ──────────────────────────────────────────
+
+  getVerifiedSender(id: number): Promise<VerifiedSender> {
+    return this.request<VerifiedSender>(
+      'GET',
+      `/verified_senders/${encodeURIComponent(String(id))}`,
+    );
+  }
+
+  createVerifiedSender(
+    payload: CreateVerifiedSenderPayload,
+  ): Promise<VerifiedSender> {
+    return this.request<VerifiedSender>('POST', '/verified_senders', payload);
+  }
+
+  resendVerifiedSenderVerification(id: number): Promise<void> {
+    return this.request<void>(
+      'POST',
+      `/verified_senders/resend/${encodeURIComponent(String(id))}`,
+    );
+  }
+
+  deleteVerifiedSender(id: number): Promise<void> {
+    return this.request<void>(
+      'DELETE',
+      `/verified_senders/${encodeURIComponent(String(id))}`,
+    );
+  }
+
+  getAuthenticatedDomain(id: number): Promise<AuthenticatedDomain> {
+    return this.request<AuthenticatedDomain>(
+      'GET',
+      `/whitelabel/domains/${encodeURIComponent(String(id))}`,
+    );
+  }
+
+  createAuthenticatedDomain(
+    payload: CreateAuthenticatedDomainPayload,
+  ): Promise<AuthenticatedDomain> {
+    return this.request<AuthenticatedDomain>(
+      'POST',
+      '/whitelabel/domains',
+      payload,
+    );
+  }
+
+  validateAuthenticatedDomain(
+    id: number,
+  ): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>(
+      'POST',
+      `/whitelabel/domains/${encodeURIComponent(String(id))}/validate`,
+    );
+  }
+
+  getBrandedLink(id: number): Promise<BrandedLink> {
+    return this.request<BrandedLink>(
+      'GET',
+      `/whitelabel/links/${encodeURIComponent(String(id))}`,
+    );
+  }
+
+  validateBrandedLink(id: number): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>(
+      'POST',
+      `/whitelabel/links/${encodeURIComponent(String(id))}/validate`,
+    );
+  }
+
+  updateBrandedLink(
+    id: number,
+    payload: UpdateBrandedLinkPayload,
+  ): Promise<BrandedLink> {
+    return this.request<BrandedLink>(
+      'PATCH',
+      `/whitelabel/links/${encodeURIComponent(String(id))}`,
+      payload,
+    );
+  }
+
+  // ─── Alerts ───────────────────────────────────────────────────────────────────
+
+  async listAlerts(): Promise<SendGridAlert[]> {
+    const payload = await this.request<unknown>('GET', '/alerts');
+    return coerceArray<SendGridAlert>(payload);
+  }
+
+  getAlert(id: number): Promise<SendGridAlert> {
+    return this.request<SendGridAlert>(
+      'GET',
+      `/alerts/${encodeURIComponent(String(id))}`,
+    );
+  }
+
+  createAlert(payload: CreateAlertPayload): Promise<SendGridAlert> {
+    return this.request<SendGridAlert>('POST', '/alerts', payload);
+  }
+
+  updateAlert(
+    id: number,
+    payload: UpdateAlertPayload,
+  ): Promise<SendGridAlert> {
+    return this.request<SendGridAlert>(
+      'PATCH',
+      `/alerts/${encodeURIComponent(String(id))}`,
+      payload,
+    );
+  }
+
+  deleteAlert(id: number): Promise<void> {
+    return this.request<void>(
+      'DELETE',
+      `/alerts/${encodeURIComponent(String(id))}`,
+    );
+  }
+
+  // ─── Inbound Parse ────────────────────────────────────────────────────────────
+
+  async listInboundParseSettings(): Promise<InboundParseSetting[]> {
+    const payload = await this.request<unknown>(
+      'GET',
+      '/user/webhooks/parse/settings',
+    );
+    return coerceArray<InboundParseSetting>(payload);
+  }
+
+  createInboundParseSetting(
+    payload: CreateInboundParsePayload,
+  ): Promise<InboundParseSetting> {
+    return this.request<InboundParseSetting>(
+      'POST',
+      '/user/webhooks/parse/settings',
+      payload,
+    );
+  }
+
+  updateInboundParseSetting(
+    hostname: string,
+    payload: UpdateInboundParsePayload,
+  ): Promise<InboundParseSetting> {
+    return this.request<InboundParseSetting>(
+      'PATCH',
+      `/user/webhooks/parse/settings/${encodeURIComponent(hostname)}`,
+      payload,
+    );
+  }
+
+  deleteInboundParseSetting(hostname: string): Promise<void> {
+    return this.request<void>(
+      'DELETE',
+      `/user/webhooks/parse/settings/${encodeURIComponent(hostname)}`,
+    );
   }
 }

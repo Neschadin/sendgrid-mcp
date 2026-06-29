@@ -5,6 +5,7 @@ import {
   type SendGridClient,
   type SendGridMailSendPayload,
 } from '../client';
+import { ensureSafeToolRegistration } from './tool_utils';
 
 const PROVIDER_FREE_FROM_DOMAINS = new Set([
   'gmail.com',
@@ -104,12 +105,13 @@ function isValidBase64(value: string): boolean {
   if (!/^[A-Za-z0-9+/]+={0,2}$/.test(normalized)) return false;
 
   try {
-    const decoded = Buffer.from(normalized, 'base64');
-    if (decoded.length === 0) return false;
-    return (
-      decoded.toString('base64').replace(/=+$/u, '') ===
-      normalized.replace(/=+$/u, '')
+    const decoded = Uint8Array.from(atob(normalized), (char) =>
+      char.charCodeAt(0),
     );
+    if (decoded.length === 0) return false;
+    let binary = '';
+    for (const byte of decoded) binary += String.fromCharCode(byte);
+    return btoa(binary).replace(/=+$/u, '') === normalized.replace(/=+$/u, '');
   } catch {
     return false;
   }
@@ -478,6 +480,32 @@ export function registerPreflightTools(
   server: McpServer,
   client: SendGridClient,
 ) {
+  ensureSafeToolRegistration(server);
+  const PreflightOutputSchema = z.object({
+    ok: z.boolean(),
+    blockers: z.array(
+      z.object({
+        severity: z.literal('blocker'),
+        code: z.string(),
+        message: z.string(),
+      }),
+    ),
+    warnings: z.array(
+      z.object({
+        severity: z.literal('warning'),
+        code: z.string(),
+        message: z.string(),
+      }),
+    ),
+    info: z.array(
+      z.object({
+        severity: z.literal('info'),
+        code: z.string(),
+        message: z.string(),
+      }),
+    ),
+  });
+
   server.registerTool(
     'validate_send_request',
     {
@@ -498,6 +526,7 @@ export function registerPreflightTools(
             'Enable sender/domain/link-branding checks (default: true)',
           ),
       }),
+      outputSchema: PreflightOutputSchema,
     },
     async ({ request, partnerAccountId, checkSenderIdentity }) => {
       const report = await runSendPreflight(client, request, {
@@ -506,6 +535,7 @@ export function registerPreflightTools(
       });
 
       return {
+        structuredContent: report,
         content: [{ type: 'text', text: formatReport(report) }],
       };
     },
@@ -525,6 +555,12 @@ export function registerPreflightTools(
           .optional()
           .describe('If true, warnings also block sending (default: false)'),
       }),
+      outputSchema: z.object({
+        sent: z.boolean(),
+        report: PreflightOutputSchema,
+        statusCode: z.number().nullable(),
+        messageId: z.string().nullable(),
+      }),
     },
     async ({
       request,
@@ -543,6 +579,12 @@ export function registerPreflightTools(
 
       if (shouldAbort) {
         return {
+          structuredContent: {
+            sent: false,
+            report,
+            statusCode: null,
+            messageId: null,
+          },
           content: [
             {
               type: 'text',
@@ -559,6 +601,12 @@ export function registerPreflightTools(
       const sendResult = await client.sendMail(toMailSendPayload(request));
 
       return {
+        structuredContent: {
+          sent: true,
+          report,
+          statusCode: sendResult.statusCode,
+          messageId: sendResult.messageId || null,
+        },
         content: [
           {
             type: 'text',

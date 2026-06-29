@@ -7,7 +7,9 @@ bun.lockb
 ## Build artifacts
 dist/
 bin/
+.tmp-typecheck/
 *.tsbuildinfo
+
 
 ## Logs
 logs/
@@ -21,8 +23,9 @@ pnpm-debug.log*
 .DS_Store
 .idea/
 .vscode/
+.agents/
+skills-lock.json
 
 ## Env / secrets
 .env
 .env.*
-
