@@ -1,7 +1,22 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { SendGridClient } from '../client';
+import {
+  jsonReadResult,
+  SyncTemplateIdsOutputSchema,
+} from './output_schemas';
 import { ensureSafeToolRegistration } from './tool_utils';
+
+const ConstantsPathSchema = z
+  .string()
+  .min(1)
+  .refine(
+    (value) => /\.(ts|js|mjs|cjs)$/iu.test(value),
+    'constantsPath must be a .ts, .js, .mjs, or .cjs file',
+  )
+  .describe(
+    'Absolute path to a local file that exports or defines SENDGRID_TEMPLATES.',
+  );
 
 /**
  * Parse SENDGRID_TEMPLATES object from the source file.
@@ -10,13 +25,11 @@ import { ensureSafeToolRegistration } from './tool_utils';
 function parseTemplatesFromSource(source: string): Record<string, string> {
   const result: Record<string, string> = {};
 
-  // Match the SENDGRID_TEMPLATES = { ... } block
   const blockMatch = source.match(/SENDGRID_TEMPLATES\s*=\s*\{([^}]+)\}/s);
   if (!blockMatch) return result;
 
   const block = blockMatch[1];
   if (!block) return result;
-  // Each line: 'key': 'd-xxxx',  or  key: 'd-xxxx',
   const lineRe = /['"]?([\w.]+)['"]?\s*:\s*['"]([^'"]+)['"]/g;
   for (const match of block.matchAll(lineRe)) {
     const key = match[1];
@@ -38,39 +51,25 @@ export function registerSyncTools(server: McpServer, client: SendGridClient) {
         'This is an opt-in local sync helper; provide constantsPath explicitly.',
       ].join(' '),
       inputSchema: z.object({
-        constantsPath: z
-          .string()
-          .min(1)
-          .describe(
-            'Absolute path to a local file that exports or defines SENDGRID_TEMPLATES.',
-          ),
+        constantsPath: ConstantsPathSchema,
       }),
+      outputSchema: SyncTemplateIdsOutputSchema,
     },
     async ({ constantsPath }) => {
       const filePath = constantsPath;
       const file = Bun.file(filePath);
 
       if (!(await file.exists())) {
-        return {
-          content: [{ type: 'text', text: `File not found: ${filePath}` }],
-        };
+        throw new Error(`File not found: ${filePath}`);
       }
 
       const source = await file.text();
       const localMap = parseTemplatesFromSource(source);
 
       if (Object.keys(localMap).length === 0) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `Could not parse SENDGRID_TEMPLATES from ${filePath}`,
-            },
-          ],
-        };
+        throw new Error(`Could not parse SENDGRID_TEMPLATES from ${filePath}`);
       }
 
-      // Fetch real templates from SendGrid
       const sgTemplates = await client.listAllDynamicTemplates(200);
       const sgById = new Map(sgTemplates.map((t) => [t.id, t]));
 
@@ -105,9 +104,19 @@ export function registerSyncTools(server: McpServer, client: SendGridClient) {
         }
       }
 
-      // Show SG templates not referenced in constants
       const localIds = new Set(Object.values(localMap));
-      const unreferenced = sgTemplates.filter((t) => !localIds.has(t.id));
+      const unreferencedTemplateIds = sgTemplates
+        .filter((t) => !localIds.has(t.id))
+        .map((t) => `${t.id} "${t.name}"`);
+
+      const structured = {
+        filePath,
+        okCount,
+        placeholderCount,
+        missingCount,
+        rows,
+        unreferencedTemplateIds,
+      };
 
       const summary = [
         `File: ${filePath}`,
@@ -117,17 +126,14 @@ export function registerSyncTools(server: McpServer, client: SendGridClient) {
         ...rows,
       ];
 
-      if (unreferenced.length > 0) {
-        summary.push(
-          ``,
-          `Templates in SendGrid not referenced in constants`,
-        );
-        for (const t of unreferenced) {
-          summary.push(`  [${t.id}] "${t.name}"`);
+      if (unreferencedTemplateIds.length > 0) {
+        summary.push(``, `Templates in SendGrid not referenced in constants`);
+        for (const entry of unreferencedTemplateIds) {
+          summary.push(`  [${entry}]`);
         }
       }
 
-      return { content: [{ type: 'text', text: summary.join('\n') }] };
+      return jsonReadResult(structured, summary.join('\n'));
     },
   );
 }

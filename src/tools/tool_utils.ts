@@ -1,5 +1,73 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { z } from 'zod';
 import { isSendGridApiError } from '../client';
+
+export const TOOL_NAME_PREFIX = 'sendgrid_';
+export const CONFIRM_TOKEN_SUFFIX = ' Requires confirmToken="CONFIRM".';
+export const SEND_PREFLIGHT_HINT =
+  ' Run validate_send_request first unless using send_with_preflight.';
+
+export const ResponseFormatSchema = z
+  .enum(['markdown', 'json'])
+  .default('markdown')
+  .describe(
+    'markdown for human-readable text; json for machine-readable text content',
+  );
+
+export type ResponseFormat = z.infer<typeof ResponseFormatSchema>;
+
+export const ListPagingInputFields = {
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(1000)
+    .optional()
+    .describe('Maximum items to return (default 50)'),
+  offset: z
+    .number()
+    .int()
+    .min(0)
+    .optional()
+    .describe('Number of items to skip (default 0)'),
+  response_format: ResponseFormatSchema.optional(),
+};
+
+export const ReadInputFields = {
+  response_format: ResponseFormatSchema.optional(),
+};
+
+export function bareToolName(name: string): string {
+  return name.startsWith(TOOL_NAME_PREFIX)
+    ? name.slice(TOOL_NAME_PREFIX.length)
+    : name;
+}
+
+export function prefixedToolName(name: string): string {
+  return name.startsWith(TOOL_NAME_PREFIX) ? name : `${TOOL_NAME_PREFIX}${name}`;
+}
+
+function inputSchemaRequiresConfirm(inputSchema: unknown): boolean {
+  if (!(inputSchema instanceof z.ZodObject)) return false;
+
+  const field = inputSchema.shape['confirmToken'];
+  if (!field) return false;
+  if (field instanceof z.ZodOptional) return false;
+
+  return true;
+}
+
+function augmentDescription(
+  description: string | undefined,
+  requiresConfirm: boolean,
+): string | undefined {
+  if (!description) return description;
+  let next = description.trim();
+  if (requiresConfirm && !next.includes('confirmToken="CONFIRM"')) {
+    next += CONFIRM_TOKEN_SUFFIX;
+  }
+  return next;
+}
 
 type ToolHandler = (
   args: unknown,
@@ -40,9 +108,19 @@ export function formatToolError(error: unknown): string {
 }
 
 const SAFE_TOOL_PATCHED = Symbol('safe-tool-patched');
+let registeredToolCount = 0;
+const registeredToolNames: string[] = [];
+
+export function getRegisteredToolNames(): readonly string[] {
+  return registeredToolNames;
+}
+
+export function getRegisteredToolCount(): number {
+  return registeredToolCount;
+}
 
 function titleFromName(name: string): string {
-  return name
+  return bareToolName(name)
     .split('_')
     .filter(Boolean)
     .map((chunk) => chunk[0]?.toUpperCase() + chunk.slice(1))
@@ -52,6 +130,7 @@ function titleFromName(name: string): string {
 function inferAnnotations(name: string, config: Record<string, unknown>) {
   if (config['annotations'] !== undefined) return config['annotations'];
 
+  const bare = bareToolName(name);
   const mutatingPrefixes = [
     'activate_',
     'cancel_',
@@ -61,11 +140,14 @@ function inferAnnotations(name: string, config: Record<string, unknown>) {
     'pause_',
     'prune_',
     'rename_',
+    'resend_',
     'resume_',
     'schedule_',
     'send_',
     'toggle_',
     'update_',
+    'validate_authenticated_',
+    'validate_branded_',
   ];
   const destructivePrefixes = ['cancel_', 'clear_', 'delete_', 'prune_'];
   const readOnlyPrefixes = [
@@ -80,16 +162,16 @@ function inferAnnotations(name: string, config: Record<string, unknown>) {
     'validate_send_request',
   ];
 
-  const mutating = mutatingPrefixes.some((prefix) => name.startsWith(prefix));
+  const mutating = mutatingPrefixes.some((prefix) => bare.startsWith(prefix));
   const destructive = destructivePrefixes.some((prefix) =>
-    name.startsWith(prefix),
+    bare.startsWith(prefix),
   );
   const readOnly =
-    !mutating && readOnlyPrefixes.some((prefix) => name.startsWith(prefix));
+    !mutating && readOnlyPrefixes.some((prefix) => bare.startsWith(prefix));
 
   return {
     readOnlyHint: readOnly,
-    destructiveHint: destructive,
+    destructiveHint: destructive || (bare === 'send_with_preflight'),
     idempotentHint: readOnly,
     openWorldHint: true,
   };
@@ -106,20 +188,35 @@ export function ensureSafeToolRegistration(server: McpServer) {
     name: unknown,
     config: unknown,
     handler: ToolHandler,
-  ) =>
-    (rawRegisterTool as (n: unknown, c: unknown, h: ToolHandler) => void)(
-      name,
+  ) => {
+    const exposedName =
+      typeof name === 'string' ? prefixedToolName(name) : name;
+
+    if (typeof exposedName === 'string') {
+      registeredToolCount += 1;
+      registeredToolNames.push(exposedName);
+    }
+
+    return (rawRegisterTool as (n: unknown, c: unknown, h: ToolHandler) => void)(
+      exposedName,
       typeof name === 'string' && typeof config === 'object' && config !== null
-        ? {
-            ...(config as Record<string, unknown>),
-            title:
-              (config as Record<string, unknown>)['title'] ??
-              titleFromName(name),
-            annotations: inferAnnotations(
-              name,
-              config as Record<string, unknown>,
-            ),
-          }
+        ? (() => {
+            const cfg = config as Record<string, unknown>;
+            const requiresConfirm = inputSchemaRequiresConfirm(
+              cfg['inputSchema'],
+            );
+            return {
+              ...cfg,
+              description: augmentDescription(
+                typeof cfg['description'] === 'string'
+                  ? cfg['description']
+                  : undefined,
+                requiresConfirm,
+              ),
+              title: cfg['title'] ?? titleFromName(name as string),
+              annotations: inferAnnotations(name as string, cfg),
+            };
+          })()
         : config,
       async (args: unknown, extra: unknown) => {
         try {
@@ -131,7 +228,8 @@ export function ensureSafeToolRegistration(server: McpServer) {
           };
         }
       },
-    )) as typeof server.registerTool;
+    );
+  }) as typeof server.registerTool;
 
   (server as unknown as Record<symbol, boolean>)[SAFE_TOOL_PATCHED] = true;
 }

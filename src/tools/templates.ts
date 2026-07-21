@@ -1,7 +1,13 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { SendGridClient } from '../client';
-import { ensureSafeToolRegistration } from './tool_utils';
+import { ensureSafeToolRegistration, ListPagingInputFields, ReadInputFields } from './tool_utils';
+import {
+  ListTemplatesOutputSchema,
+  TemplateHtmlOutputSchema,
+  jsonReadResult,
+  paginateArray,
+} from './output_schemas';
 
 const ConfirmTokenSchema = z
   .literal('CONFIRM')
@@ -24,28 +30,15 @@ export function registerTemplateTools(
     .max(100)
     .describe('Template name (max 100 chars)');
 
-  const ListTemplatesOutputSchema = z.object({
-    count: z.number().int().nonnegative(),
-    templates: z.array(
-      z.object({
-        id: z.string(),
-        name: z.string(),
-        versions: z.number().int().nonnegative(),
-        activeSubject: z.string().nullable(),
-        updatedAt: z.string(),
-      }),
-    ),
-  });
-
   server.registerTool(
     'list_templates',
     {
       description:
         'List all dynamic SendGrid templates with their IDs, names, and version counts',
-      inputSchema: z.object({}),
+      inputSchema: z.object({ ...ListPagingInputFields }),
       outputSchema: ListTemplatesOutputSchema,
     },
-    async () => {
+    async (params) => {
       const result = await client.listAllDynamicTemplates(200);
       const templates = result.map((t) => {
         const active = t.versions.find((v) => v.active === 1);
@@ -57,25 +50,22 @@ export function registerTemplateTools(
           updatedAt: t.updated_at,
         };
       });
-      const rows = result.map((t) => {
-        const active = t.versions.find((v) => v.active === 1);
-        return `• [${t.id}] ${t.name}  (versions: ${t.versions.length}, active subject: "${active?.subject ?? '—'}", updated: ${t.updated_at})`;
-      });
-      return {
-        structuredContent: {
-          count: templates.length,
-          templates,
-        },
-        content: [
-          {
-            type: 'text',
-            text:
-              result.length === 0
-                ? 'No dynamic templates found.'
-                : `Found ${result.length} dynamic template(s):\n\n${rows.join('\n')}`,
-          },
-        ],
-      };
+      const { items, pagination } = paginateArray(
+        templates,
+        params.limit,
+        params.offset,
+      );
+      const rows = items.map(
+        (t) =>
+          `• [${t.id}] ${t.name}  (versions: ${t.versions}, active subject: "${t.activeSubject ?? '—'}", updated: ${t.updatedAt})`,
+      );
+      return jsonReadResult(
+        { ...pagination, templates: items },
+        items.length === 0
+          ? 'No dynamic templates found.'
+          : `Found ${pagination.total_count} dynamic template(s):\n\n${rows.join('\n')}`,
+        params.response_format,
+      );
     },
   );
 
@@ -343,9 +333,11 @@ export function registerTemplateTools(
           .string()
           .optional()
           .describe('Version ID — omit to use the active version'),
+        ...ReadInputFields,
       }),
+      outputSchema: TemplateHtmlOutputSchema,
     },
-    async ({ templateId, versionId }) => {
+    async ({ templateId, versionId, response_format }) => {
       let resolvedVersionId = versionId;
 
       if (!resolvedVersionId) {
@@ -368,23 +360,30 @@ export function registerTemplateTools(
         templateId,
         resolvedVersionId,
       );
-      return {
-        content: [
-          {
-            type: 'text',
-            text: [
-              `Template: ${templateId}`,
-              `Version:  ${version.id}  (active: ${version.active === 1 ? 'yes' : 'no'})`,
-              `Name:     ${version.name}`,
-              `Subject:  ${version.subject}`,
-              `Updated:  ${version.updated_at}`,
-              ``,
-              `─── HTML ────────────────────────────────────────────────────`,
-              version.html_content,
-            ].join('\n'),
-          },
-        ],
+      const structured = {
+        templateId,
+        versionId: version.id,
+        active: version.active === 1,
+        name: version.name,
+        subject: version.subject,
+        updatedAt: version.updated_at,
+        htmlContent: version.html_content,
       };
+
+      return jsonReadResult(
+        structured,
+        [
+          `Template: ${templateId}`,
+          `Version:  ${version.id}  (active: ${version.active === 1 ? 'yes' : 'no'})`,
+          `Name:     ${version.name}`,
+          `Subject:  ${version.subject}`,
+          `Updated:  ${version.updated_at}`,
+          ``,
+          `─── HTML ────────────────────────────────────────────────────`,
+          version.html_content,
+        ].join('\n'),
+        response_format,
+      );
     },
   );
 

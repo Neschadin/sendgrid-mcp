@@ -14,7 +14,7 @@ This project is community-maintained and is not affiliated with, endorsed by, or
 
 ## Features
 
-- **Safe send** — `validate_send_request`, `send_with_preflight`, sandbox mode
+- **Safe send** — `sendgrid_validate_send_request`, `sendgrid_send_with_preflight`, sandbox mode
 - **Templates** — list/create/update/activate dynamic templates
 - **Diagnostics** — Email Activity, suppressions, stats, error classification, delivery triage
 - **Webhooks** — Event Webhook config in SendGrid + optional local receiver (ngrok-friendly)
@@ -131,9 +131,15 @@ Restart the client after changing MCP config.
 
 ## Safety
 
-- **Send tools** can enqueue real email. Prefer `send_with_preflight` in automation.
+- **Send tools** can enqueue real email. Prefer `sendgrid_send_with_preflight` in automation.
 - **Mutating console tools** require `confirmToken: "CONFIRM"` (alerts, mail/tracking settings, verified senders, domains, webhooks).
 - **Email Activity** (`/v3/messages`) may require the [Email Activity add-on](https://www.twilio.com/docs/sendgrid/api-reference/email-activity/filter-all-messages).
+
+## v2 breaking changes
+
+- MCP server name: `sendgrid-mcp-server`
+- All tool names are prefixed: `sendgrid_<name>` (e.g. `sendgrid_validate_send_request`)
+- List/read tools accept optional `response_format` (`markdown` | `json`) and return pagination metadata on list tools
 
 ## Development (maintainers only)
 
@@ -147,8 +153,9 @@ bun run dev          # stdio MCP from TypeScript
 bun run build        # compile → bin/sendgrid (local platform)
 ./scripts/build-release.sh   # all release targets → dist/
 bun run lint
-bun run typecheck
+bun run typecheck:tsc   # bun build graph + unit tests
 bun run smoke
+bun test tests
 ```
 
 ### MCP Inspector

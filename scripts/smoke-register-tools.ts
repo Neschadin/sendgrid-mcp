@@ -7,6 +7,11 @@ import { registerEmailTools } from '../src/tools/email';
 import { registerPreflightTools } from '../src/tools/preflight';
 import { registerSyncTools } from '../src/tools/sync';
 import { registerTemplateTools } from '../src/tools/templates';
+import {
+  getRegisteredToolCount,
+  getRegisteredToolNames,
+  TOOL_NAME_PREFIX,
+} from '../src/tools/tool_utils';
 
 const client = new Proxy(
   {},
@@ -23,7 +28,7 @@ const client = new Proxy(
 ) as SendGridClient;
 
 const server = new McpServer({
-  name: 'sendgrid-smoke',
+  name: 'sendgrid-mcp-server',
   version: '0.0.0',
 });
 
@@ -35,4 +40,19 @@ registerSyncTools(server, client);
 registerAccountTools(server, client);
 registerConsoleSettingsTools(server, client);
 
-process.stdout.write('Tool registration smoke test passed.\n');
+const count = getRegisteredToolCount();
+const names = getRegisteredToolNames();
+
+if (count < 60) {
+  throw new Error(`Expected at least 60 registered tools, got ${count}`);
+}
+
+for (const name of names) {
+  if (!name.startsWith(TOOL_NAME_PREFIX)) {
+    throw new Error(`Tool "${name}" is missing required prefix "${TOOL_NAME_PREFIX}"`);
+  }
+}
+
+process.stdout.write(
+  `Tool registration smoke test passed (${count} tools, all prefixed).\n`,
+);

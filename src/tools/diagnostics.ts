@@ -1,12 +1,35 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { isSendGridApiError, type SendGridClient } from '../client';
-import { ensureSafeToolRegistration, formatToolError } from './tool_utils';
+import {
+  ensureSafeToolRegistration,
+  formatToolError,
+  ListPagingInputFields,
+  ReadInputFields,
+  ResponseFormatSchema,
+} from './tool_utils';
+import {
+  AnalyzeEngagementOutputSchema,
+  ClassifyErrorOutputSchema,
+  EmailStatsOutputSchema,
+  EventWebhookListOutputSchema,
+  EventWebhookSchema,
+  ListSuppressionsOutputSchema,
+  MessageActivitySchema,
+  ReceivedWebhookEventsOutputSchema,
+  SearchMessageActivityOutputSchema,
+  TriageDeliveryOutputSchema,
+  WebhookReceiverStatusOutputSchema,
+  buildPaginationMeta,
+  jsonReadResult,
+  paginateArray,
+} from './output_schemas';
 import {
   clearStoredWebhookEvents,
   getStoredWebhookEvents,
   getWebhookReceiverStatus,
 } from '../webhook_receiver';
+import { classifySendGridError } from './classify_error';
 
 type EngagementEvent = {
   event: string;
@@ -40,134 +63,6 @@ function normalize(text: string): string {
 function summarizeRates(requests: number, delivered: number): string {
   if (requests === 0) return '0%';
   return `${((delivered / requests) * 100).toFixed(1)}%`;
-}
-
-function classifyError(statusCode: number | undefined, text: string) {
-  const details: {
-    category: string;
-    probableCauses: string[];
-    actions: string[];
-  } = {
-    category: 'unknown',
-    probableCauses: ['Insufficient context to classify exactly.'],
-    actions: ['Check full API error body and endpoint payload.'],
-  };
-
-  if (
-    text.includes('from address does not match a verified sender identity') ||
-    text.includes('verified sender identity')
-  ) {
-    return {
-      category: 'sender_identity',
-      probableCauses: [
-        'From address/domain is not verified for API sending.',
-        'Domain authentication not configured for sender domain.',
-      ],
-      actions: [
-        'Authenticate sender domain and use matching From domain.',
-        'Run sender preflight checks before retrying.',
-      ],
-    };
-  }
-
-  if (
-    text.includes('invalid template') ||
-    text.includes('template') ||
-    text.includes('dropped')
-  ) {
-    return {
-      category: 'template_validation',
-      probableCauses: [
-        'Template ID is invalid or inaccessible.',
-        'Template has no active version.',
-        'Template render data does not match expected handlebars variables.',
-      ],
-      actions: [
-        'Verify template ID exists and has active version.',
-        'Validate dynamic template data against template variables.',
-      ],
-    };
-  }
-
-  if (text.includes('attachment content must be base64')) {
-    return {
-      category: 'attachment_encoding',
-      probableCauses: ['Attachment payload is not base64-encoded correctly.'],
-      actions: [
-        'Base64-encode attachment content before send.',
-        'Validate attachment payload in preflight.',
-      ],
-    };
-  }
-
-  if (statusCode === 429 || text.includes('rate limit')) {
-    return {
-      category: 'rate_limit',
-      probableCauses: ['Endpoint rate limit exceeded.'],
-      actions: [
-        'Back off and retry after reset.',
-        'Queue requests and apply per-endpoint pacing.',
-      ],
-    };
-  }
-
-  if (statusCode === 413 || text.includes('payload too large')) {
-    return {
-      category: 'payload_too_large',
-      probableCauses: [
-        'Email payload or attachment set exceeds API/provider limits.',
-      ],
-      actions: [
-        'Reduce attachment sizes and payload footprint.',
-        'Move large files to hosted links instead of attachments.',
-      ],
-    };
-  }
-
-  if (statusCode === 401) {
-    return {
-      category: 'auth_or_account_state',
-      probableCauses: [
-        'Invalid/revoked API key or missing scopes.',
-        'Account in disabled/frozen/credit-exceeded state.',
-      ],
-      actions: [
-        'Verify API key validity and scopes.',
-        'Check account/billing state before retrying sends.',
-      ],
-    };
-  }
-
-  if (statusCode === 403) {
-    return {
-      category: 'permissions_or_policy',
-      probableCauses: [
-        'API key lacks required permissions.',
-        'Endpoint forbidden for this account/plan state.',
-      ],
-      actions: [
-        'Use key with required scopes.',
-        'Validate account feature availability for the endpoint.',
-      ],
-    };
-  }
-
-  if (statusCode === 400) {
-    return {
-      category: 'payload_validation',
-      probableCauses: [
-        'Malformed JSON or invalid request schema.',
-        'Duplicate recipients across to/cc/bcc in a personalization block.',
-        'Missing required fields (subject/content/from/personalizations).',
-      ],
-      actions: [
-        'Validate payload schema and required fields.',
-        'Ensure recipient uniqueness per personalization block.',
-      ],
-    };
-  }
-
-  return details;
 }
 
 function findTopCount(
@@ -204,12 +99,29 @@ export function registerDiagnosticsTools(
             'SendGrid Email Activity query, e.g. from_email="ops@acme.com" AND to_email="user@acme.com"',
           ),
         limit: z.number().int().min(1).max(1000).optional(),
+        offset: z.number().int().min(0).optional(),
+        response_format: ResponseFormatSchema.optional(),
       }),
+      outputSchema: SearchMessageActivityOutputSchema,
     },
-    async ({ query, limit }) => {
+    async ({ query, limit, offset, response_format }) => {
       try {
-        const response = await client.filterMessages(query, limit ?? 25);
+        const pageLimit = limit ?? 25;
+        const response = await client.filterMessages(query, pageLimit);
         const messages = response.messages ?? [];
+        const pageOffset = offset ?? 0;
+        const pagination = buildPaginationMeta({
+          totalCount: messages.length + pageOffset,
+          count: messages.length,
+          offset: pageOffset,
+        });
+        const structured = {
+          ...pagination,
+          has_more: messages.length >= pageLimit,
+          next_offset:
+            messages.length >= pageLimit ? pageOffset + messages.length : null,
+          messages,
+        };
         const rows = messages.map((message) => {
           return [
             `- msg_id=${message.msg_id ?? 'n/a'}`,
@@ -221,19 +133,13 @@ export function registerDiagnosticsTools(
           ].join(' | ');
         });
 
-        return {
-          content: [
-            {
-              type: 'text',
-              text:
-                rows.length === 0
-                  ? 'No messages matched query.'
-                  : [`Matched messages: ${rows.length}`, '', ...rows].join(
-                      '\n',
-                    ),
-            },
-          ],
-        };
+        return jsonReadResult(
+          structured,
+          rows.length === 0
+            ? 'No messages matched query.'
+            : [`Matched messages: ${rows.length}`, '', ...rows].join('\n'),
+          response_format,
+        );
       } catch (error) {
         if (isSendGridApiError(error)) {
           const addonHint =
@@ -256,14 +162,14 @@ export function registerDiagnosticsTools(
         'Get SendGrid Email Activity details for one message by msg_id.',
       inputSchema: z.object({
         msgId: z.string().min(1),
+        ...ReadInputFields,
       }),
+      outputSchema: MessageActivitySchema,
     },
-    async ({ msgId }) => {
+    async ({ msgId, response_format }) => {
       try {
         const message = await client.getMessageById(msgId);
-        return {
-          content: [{ type: 'text', text: JSON.stringify(message, null, 2) }],
-        };
+        return jsonReadResult(message, JSON.stringify(message, null, 2), response_format);
       } catch (error) {
         if (isSendGridApiError(error)) {
           const addonHint =
@@ -286,14 +192,17 @@ export function registerDiagnosticsTools(
         'List all Event Webhook configurations directly from SendGrid.',
       inputSchema: z.object({
         includeAccountStatusChange: z.boolean().optional(),
+        ...ListPagingInputFields,
       }),
+      outputSchema: EventWebhookListOutputSchema,
     },
-    async ({ includeAccountStatusChange }) => {
+    async ({ includeAccountStatusChange, limit, offset, response_format }) => {
       const response = await client.getAllEventWebhooks(
         includeAccountStatusChange ?? false,
       );
       const webhooks = response.webhooks ?? [];
-      const rows = webhooks.map((webhook) => {
+      const { items, pagination } = paginateArray(webhooks, limit, offset);
+      const rows = items.map((webhook) => {
         return [
           `- id=${webhook.id ?? 'n/a'}`,
           `enabled=${String(webhook.enabled ?? false)}`,
@@ -308,22 +217,22 @@ export function registerDiagnosticsTools(
         ].join(' | ');
       });
 
-      return {
-        content: [
-          {
-            type: 'text',
-            text:
-              rows.length === 0
-                ? 'No event webhooks found.'
-                : [
-                    `Max allowed webhooks: ${response.max_allowed ?? 'n/a'}`,
-                    `Configured webhooks: ${rows.length}`,
-                    '',
-                    ...rows,
-                  ].join('\n'),
-          },
-        ],
-      };
+      return jsonReadResult(
+        {
+          ...pagination,
+          maxAllowed: response.max_allowed ?? null,
+          webhooks: items,
+        },
+        rows.length === 0
+          ? 'No event webhooks found.'
+          : [
+              `Max allowed webhooks: ${response.max_allowed ?? 'n/a'}`,
+              `Configured webhooks: ${pagination.total_count}`,
+              '',
+              ...rows,
+            ].join('\n'),
+        response_format,
+      );
     },
   );
 
@@ -334,16 +243,16 @@ export function registerDiagnosticsTools(
       inputSchema: z.object({
         id: z.string().min(1),
         includeAccountStatusChange: z.boolean().optional(),
+        ...ReadInputFields,
       }),
+      outputSchema: EventWebhookSchema,
     },
-    async ({ id, includeAccountStatusChange }) => {
+    async ({ id, includeAccountStatusChange, response_format }) => {
       const webhook = await client.getEventWebhook(
         id,
         includeAccountStatusChange ?? false,
       );
-      return {
-        content: [{ type: 'text', text: JSON.stringify(webhook, null, 2) }],
-      };
+      return jsonReadResult(webhook, JSON.stringify(webhook, null, 2), response_format);
     },
   );
 
@@ -469,17 +378,12 @@ export function registerDiagnosticsTools(
     {
       description:
         'Show local webhook receiver status for incoming SendGrid Event Webhook posts.',
-      inputSchema: z.object({}),
+      inputSchema: z.object({ ...ReadInputFields }),
+      outputSchema: WebhookReceiverStatusOutputSchema,
     },
-    async () => {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(getWebhookReceiverStatus(), null, 2),
-          },
-        ],
-      };
+    async ({ response_format }) => {
+      const status = getWebhookReceiverStatus();
+      return jsonReadResult(status, JSON.stringify(status, null, 2), response_format);
     },
   );
 
@@ -494,9 +398,20 @@ export function registerDiagnosticsTools(
         email: z.string().email().optional(),
         messageId: z.string().optional(),
         onlyVerified: z.boolean().optional(),
+        offset: z.number().int().min(0).optional(),
+        response_format: ResponseFormatSchema.optional(),
       }),
+      outputSchema: ReceivedWebhookEventsOutputSchema,
     },
-    async ({ limit, eventType, email, messageId, onlyVerified }) => {
+    async ({
+      limit,
+      offset,
+      eventType,
+      email,
+      messageId,
+      onlyVerified,
+      response_format,
+    }) => {
       const events = getStoredWebhookEvents({
         limit,
         eventType,
@@ -504,18 +419,20 @@ export function registerDiagnosticsTools(
         messageId,
         onlyVerified,
       });
+      const pageOffset = offset ?? 0;
+      const pagination = buildPaginationMeta({
+        totalCount: events.length + pageOffset,
+        count: events.length,
+        offset: pageOffset,
+      });
 
-      return {
-        content: [
-          {
-            type: 'text',
-            text:
-              events.length === 0
-                ? 'No matching webhook events captured.'
-                : JSON.stringify(events, null, 2),
-          },
-        ],
-      };
+      return jsonReadResult(
+        { ...pagination, events },
+        events.length === 0
+          ? 'No matching webhook events captured.'
+          : JSON.stringify(events, null, 2),
+        response_format,
+      );
     },
   );
 
@@ -552,33 +469,46 @@ export function registerDiagnosticsTools(
     {
       description:
         'Classify SendGrid API errors and return likely causes with targeted remediation steps.',
-      inputSchema: z.object({
-        statusCode: z.number().int().optional(),
-        errorMessage: z.string().optional(),
-        rawBody: z.string().optional(),
-      }),
+      inputSchema: z
+        .object({
+          statusCode: z.number().int().optional(),
+          errorMessage: z.string().optional(),
+          rawBody: z.string().optional(),
+          ...ReadInputFields,
+        })
+        .refine(
+          (value) =>
+            value.statusCode !== undefined ||
+            (value.errorMessage?.trim().length ?? 0) > 0 ||
+            (value.rawBody?.trim().length ?? 0) > 0,
+          'Provide at least one of statusCode, errorMessage, or rawBody.',
+        ),
+      outputSchema: ClassifyErrorOutputSchema,
     },
-    async ({ statusCode, errorMessage, rawBody }) => {
+    async ({ statusCode, errorMessage, rawBody, response_format }) => {
       const text = normalize(`${errorMessage ?? ''}\n${rawBody ?? ''}`);
-      const classified = classifyError(statusCode, text);
-
-      return {
-        content: [
-          {
-            type: 'text',
-            text: [
-              `Category: ${classified.category}`,
-              `Status code: ${statusCode ?? 'unknown'}`,
-              '',
-              'Probable causes:',
-              ...classified.probableCauses.map((cause) => `- ${cause}`),
-              '',
-              'Recommended actions:',
-              ...classified.actions.map((action) => `- ${action}`),
-            ].join('\n'),
-          },
-        ],
+      const classified = classifySendGridError(statusCode, text);
+      const structured = {
+        category: classified.category,
+        statusCode: statusCode ?? null,
+        probableCauses: classified.probableCauses,
+        actions: classified.actions,
       };
+
+      return jsonReadResult(
+        structured,
+        [
+          `Category: ${classified.category}`,
+          `Status code: ${statusCode ?? 'unknown'}`,
+          '',
+          'Probable causes:',
+          ...classified.probableCauses.map((cause) => `- ${cause}`),
+          '',
+          'Recommended actions:',
+          ...classified.actions.map((action) => `- ${action}`),
+        ].join('\n'),
+        response_format,
+      );
     },
   );
 
@@ -611,7 +541,9 @@ export function registerDiagnosticsTools(
           .string()
           .optional()
           .describe('Optional /partners/accounts/{id}/state check'),
+        ...ReadInputFields,
       }),
+      outputSchema: TriageDeliveryOutputSchema,
     },
     async ({
       scenario,
@@ -624,6 +556,7 @@ export function registerDiagnosticsTools(
       provider,
       sinceDate,
       partnerAccountId,
+      response_format,
     }) => {
       const findings: string[] = [];
       const actions: string[] = [];
@@ -820,24 +753,21 @@ export function registerDiagnosticsTools(
           break;
       }
 
-      return {
-        content: [
-          {
-            type: 'text',
-            text: [
-              `Scenario: ${scenario}`,
-              '',
-              'Findings:',
-              ...(findings.length > 0
-                ? findings.map((finding) => `- ${finding}`)
-                : ['- No runtime findings were gathered.']),
-              '',
-              'Recommended actions:',
-              ...actions.map((action) => `- ${action}`),
-            ].join('\n'),
-          },
-        ],
-      };
+      return jsonReadResult(
+        { scenario, findings, actions },
+        [
+          `Scenario: ${scenario}`,
+          '',
+          'Findings:',
+          ...(findings.length > 0
+            ? findings.map((finding) => `- ${finding}`)
+            : ['- No runtime findings were gathered.']),
+          '',
+          'Recommended actions:',
+          ...actions.map((action) => `- ${action}`),
+        ].join('\n'),
+        response_format,
+      );
     },
   );
 
@@ -869,9 +799,11 @@ export function registerDiagnosticsTools(
           .describe(
             'Delta window to mark suspicious immediate clicks (default 5s)',
           ),
+        ...ReadInputFields,
       }),
+      outputSchema: AnalyzeEngagementOutputSchema,
     },
-    async ({ events, nearDeliveryWindowSec }) => {
+    async ({ events, nearDeliveryWindowSec, response_format }) => {
       const webhookEvents = events as EngagementEvent[];
       const clickEvents = webhookEvents.filter(
         (event) => event.event === 'click',
@@ -966,31 +898,44 @@ export function registerDiagnosticsTools(
         );
       }
 
-      return {
-        content: [
-          {
-            type: 'text',
-            text: [
-              'Engagement analysis:',
-              `- Total events: ${webhookEvents.length}`,
-              `- Opens: ${openEvents.length}`,
-              `- Clicks: ${clickEvents.length}`,
-              `- Delivered: ${deliveredEvents.length}`,
-              `- Unique-open approximation (first non-machine open per message/email): ${uniqueOpenApproxByKey.size}`,
-              '',
-              'Anomaly findings:',
-              ...(findings.length > 0
-                ? findings.map((finding) => `- ${finding}`)
-                : ['- No strong anomaly pattern detected.']),
-              '',
-              'Suggested handling:',
-              '- Exclude sg_machine_open=true from user-open KPIs.',
-              '- De-duplicate opens by message ID for unique-open metrics.',
-              '- Down-rank click/open bursts with same IP + same user-agent near delivery time.',
-            ].join('\n'),
-          },
-        ],
+      const suggestions = [
+        'Exclude sg_machine_open=true from user-open KPIs.',
+        'De-duplicate opens by message ID for unique-open metrics.',
+        'Down-rank click/open bursts with same IP + same user-agent near delivery time.',
+      ];
+
+      const structured = {
+        totals: {
+          events: webhookEvents.length,
+          opens: openEvents.length,
+          clicks: clickEvents.length,
+          delivered: deliveredEvents.length,
+          uniqueOpenApprox: uniqueOpenApproxByKey.size,
+        },
+        findings,
+        suggestions,
       };
+
+      return jsonReadResult(
+        structured,
+        [
+          'Engagement analysis:',
+          `- Total events: ${webhookEvents.length}`,
+          `- Opens: ${openEvents.length}`,
+          `- Clicks: ${clickEvents.length}`,
+          `- Delivered: ${deliveredEvents.length}`,
+          `- Unique-open approximation (first non-machine open per message/email): ${uniqueOpenApproxByKey.size}`,
+          '',
+          'Anomaly findings:',
+          ...(findings.length > 0
+            ? findings.map((finding) => `- ${finding}`)
+            : ['- No strong anomaly pattern detected.']),
+          '',
+          'Suggested handling:',
+          ...suggestions.map((item) => `- ${item}`),
+        ].join('\n'),
+        response_format,
+      );
     },
   );
 
@@ -1013,12 +958,16 @@ export function registerDiagnosticsTools(
         startTime: z.number().int().optional(),
         endTime: z.number().int().optional(),
         email: z.string().email().optional(),
+        response_format: ResponseFormatSchema.optional(),
       }),
+      outputSchema: ListSuppressionsOutputSchema,
     },
-    async ({ type, limit, offset, startTime, endTime, email }) => {
+    async ({ type, limit, offset, startTime, endTime, email, response_format }) => {
+      const pageLimit = limit ?? 50;
+      const pageOffset = offset ?? 0;
       const entries = await client.listSuppressions(type, {
-        limit: limit ?? 50,
-        offset,
+        limit: pageLimit,
+        offset: pageOffset,
         startTime,
         endTime,
         email,
@@ -1028,22 +977,26 @@ export function registerDiagnosticsTools(
         return `- email=${entry.email} | created=${entry.created} | reason=${entry.reason ?? 'n/a'} | status=${entry.status ?? 'n/a'}`;
       });
 
-      return {
-        content: [
-          {
-            type: 'text',
-            text:
-              rows.length === 0
-                ? `No entries in ${type}.`
-                : [
-                    `Type: ${type}`,
-                    `Entries: ${rows.length}`,
-                    '',
-                    ...rows,
-                  ].join('\n'),
-          },
-        ],
-      };
+      const pagination = buildPaginationMeta({
+        totalCount: pageOffset + entries.length,
+        count: entries.length,
+        offset: pageOffset,
+      });
+
+      return jsonReadResult(
+        {
+          ...pagination,
+          has_more: entries.length >= pageLimit,
+          next_offset:
+            entries.length >= pageLimit ? pageOffset + entries.length : null,
+          type,
+          entries,
+        },
+        rows.length === 0
+          ? `No entries in ${type}.`
+          : [`Type: ${type}`, `Entries: ${rows.length}`, '', ...rows].join('\n'),
+        response_format,
+      );
     },
   );
 
@@ -1054,6 +1007,7 @@ export function registerDiagnosticsTools(
         'Check if an email address is suppressed (bounce, block, global unsubscribe, spam report, or invalid email).',
       inputSchema: z.object({
         email: z.string().email().describe('Email address to check'),
+        ...ReadInputFields,
       }),
       outputSchema: z.object({
         email: z.string().email(),
@@ -1064,7 +1018,7 @@ export function registerDiagnosticsTools(
         invalidEmail: z.boolean(),
       }),
     },
-    async ({ email }) => {
+    async ({ email, response_format }) => {
       const result = await client.checkSuppression(email);
 
       const flags = [
@@ -1087,8 +1041,8 @@ export function registerDiagnosticsTools(
         }
       }
 
-      return {
-        structuredContent: {
+      return jsonReadResult(
+        {
           email,
           bounced: result.bounced,
           blocked: result.blocked,
@@ -1096,8 +1050,9 @@ export function registerDiagnosticsTools(
           spamReported: result.spamReported,
           invalidEmail: result.invalidEmail,
         },
-        content: [{ type: 'text', text: lines.join('\n') }],
-      };
+        lines.join('\n'),
+        response_format,
+      );
     },
   );
 
@@ -1110,25 +1065,24 @@ export function registerDiagnosticsTools(
         endDate: DateSchema.optional().describe(
           'End date YYYY-MM-DD (defaults to today)',
         ),
+        ...ReadInputFields,
       }),
-      outputSchema: z.object({
-        startDate: z.string(),
-        endDate: z.string().nullable(),
-        totals: z.object({
-          requests: z.number(),
-          delivered: z.number(),
-          bounces: z.number(),
-          opens: z.number(),
-        }),
-      }),
+      outputSchema: EmailStatsOutputSchema,
     },
-    async ({ startDate, endDate }) => {
+    async ({ startDate, endDate, response_format }) => {
       const stats = await client.getStats(startDate, endDate);
+      const emptyTotals = { requests: 0, delivered: 0, bounces: 0, opens: 0 };
 
       if (stats.length === 0) {
-        return {
-          content: [{ type: 'text', text: 'No stats for the given range.' }],
-        };
+        return jsonReadResult(
+          {
+            startDate,
+            endDate: endDate ?? null,
+            totals: emptyTotals,
+          },
+          'No stats for the given range.',
+          response_format,
+        );
       }
 
       const rows = stats.map((day) => {
@@ -1157,24 +1111,20 @@ export function registerDiagnosticsTools(
         { requests: 0, delivered: 0, bounces: 0, opens: 0 },
       );
 
-      return {
-        structuredContent: {
+      return jsonReadResult(
+        {
           startDate,
           endDate: endDate ?? null,
           totals: total,
         },
-        content: [
-          {
-            type: 'text',
-            text: [
-              `Stats: ${startDate} → ${endDate ?? 'today'}`,
-              `Total: ${total.requests} requests, ${total.delivered} delivered, ${total.bounces} bounces, ${total.opens} opens`,
-              ``,
-              ...rows,
-            ].join('\n'),
-          },
-        ],
-      };
+        [
+          `Stats: ${startDate} → ${endDate ?? 'today'}`,
+          `Total: ${total.requests} requests, ${total.delivered} delivered, ${total.bounces} bounces, ${total.opens} opens`,
+          ``,
+          ...rows,
+        ].join('\n'),
+        response_format,
+      );
     },
   );
 }

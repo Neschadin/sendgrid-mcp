@@ -1,15 +1,31 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { SendGridClient } from '../client';
-import { ensureSafeToolRegistration } from './tool_utils';
+import {
+  AlertsListOutputSchema,
+  AuthenticatedDomainSchema,
+  AuthenticatedDomainsListOutputSchema,
+  BrandedLinkSchema,
+  BrandedLinksListOutputSchema,
+  jsonReadResult,
+  jsonText,
+  paginateArray,
+  SendGridAlertSchema,
+  UserAccountOutputSchema,
+  UserCreditsOutputSchema,
+  UserProfileOutputSchema,
+  VerifiedSenderSchema,
+  VerifiedSendersListOutputSchema,
+} from './output_schemas';
+import {
+  ensureSafeToolRegistration,
+  ListPagingInputFields,
+  ReadInputFields,
+} from './tool_utils';
 
 const ConfirmTokenSchema = z
   .literal('CONFIRM')
   .describe('Safety token required for mutating SendGrid account settings');
-
-function jsonText(data: unknown): string {
-  return JSON.stringify(data, null, 2);
-}
 
 export function registerAccountTools(server: McpServer, client: SendGridClient) {
   ensureSafeToolRegistration(server);
@@ -19,33 +35,39 @@ export function registerAccountTools(server: McpServer, client: SendGridClient) 
     {
       description:
         'Read SendGrid account overview (account type, reputation, and related metadata).',
-      inputSchema: z.object({}),
+      inputSchema: z.object({ ...ReadInputFields }),
+      outputSchema: UserAccountOutputSchema,
     },
-    async () => ({
-      content: [{ type: 'text', text: jsonText(await client.getUserAccount()) }],
-    }),
+    async ({ response_format }) => {
+      const data = await client.getUserAccount();
+      return jsonReadResult(data, undefined, response_format);
+    },
   );
 
   server.registerTool(
     'get_user_profile',
     {
       description: 'Read SendGrid user profile (company, address, contact fields).',
-      inputSchema: z.object({}),
+      inputSchema: z.object({ ...ReadInputFields }),
+      outputSchema: UserProfileOutputSchema,
     },
-    async () => ({
-      content: [{ type: 'text', text: jsonText(await client.getUserProfile()) }],
-    }),
+    async ({ response_format }) => {
+      const data = await client.getUserProfile();
+      return jsonReadResult(data, undefined, response_format);
+    },
   );
 
   server.registerTool(
     'get_user_credits',
     {
       description: 'Read SendGrid account email credits/quota overview.',
-      inputSchema: z.object({}),
+      inputSchema: z.object({ ...ReadInputFields }),
+      outputSchema: UserCreditsOutputSchema,
     },
-    async () => ({
-      content: [{ type: 'text', text: jsonText(await client.getUserCredits()) }],
-    }),
+    async ({ response_format }) => {
+      const data = await client.getUserCredits();
+      return jsonReadResult(data, undefined, response_format);
+    },
   );
 
   server.registerTool(
@@ -53,30 +75,42 @@ export function registerAccountTools(server: McpServer, client: SendGridClient) 
     {
       description: 'List verified sender identities configured in SendGrid.',
       inputSchema: z.object({
-        limit: z.number().int().min(1).max(500).optional(),
         lastSeenID: z.number().int().optional(),
         id: z.number().int().optional(),
+        ...ListPagingInputFields,
       }),
+      outputSchema: VerifiedSendersListOutputSchema,
     },
-    async (params) => ({
-      content: [
-        {
-          type: 'text',
-          text: jsonText(await client.listVerifiedSenders(params)),
-        },
-      ],
-    }),
+    async (params) => {
+      const senders = await client.listVerifiedSenders({
+        limit: params.limit ?? 200,
+        lastSeenID: params.lastSeenID,
+        id: params.id,
+      });
+      const { items, pagination } = paginateArray(
+        senders,
+        params.limit,
+        params.offset,
+      );
+      return jsonReadResult(
+        { ...pagination, senders: items },
+        jsonText(items),
+        params.response_format,
+      );
+    },
   );
 
   server.registerTool(
     'get_verified_sender',
     {
       description: 'Read one verified sender identity by ID.',
-      inputSchema: z.object({ id: z.number().int().positive() }),
+      inputSchema: z.object({ id: z.number().int().positive(), ...ReadInputFields }),
+      outputSchema: VerifiedSenderSchema,
     },
-    async ({ id }) => ({
-      content: [{ type: 'text', text: jsonText(await client.getVerifiedSender(id)) }],
-    }),
+    async ({ id, response_format }) => {
+      const sender = await client.getVerifiedSender(id);
+      return jsonReadResult(sender, undefined, response_format);
+    },
   );
 
   server.registerTool(
@@ -84,51 +118,70 @@ export function registerAccountTools(server: McpServer, client: SendGridClient) 
     {
       description:
         'List domain authentication (whitelabel domain) records and DNS validation state.',
-      inputSchema: z.object({}),
+      inputSchema: z.object({ ...ListPagingInputFields }),
+      outputSchema: AuthenticatedDomainsListOutputSchema,
     },
-    async () => ({
-      content: [
-        {
-          type: 'text',
-          text: jsonText(await client.listAuthenticatedDomains()),
-        },
-      ],
-    }),
+    async (params) => {
+      const domains = await client.listAuthenticatedDomains();
+      const { items, pagination } = paginateArray(
+        domains,
+        params.limit,
+        params.offset,
+      );
+      return jsonReadResult(
+        { ...pagination, domains: items },
+        jsonText(items),
+        params.response_format,
+      );
+    },
   );
 
   server.registerTool(
     'get_authenticated_domain',
     {
       description: 'Read one authenticated domain record by ID.',
-      inputSchema: z.object({ id: z.number().int().positive() }),
+      inputSchema: z.object({ id: z.number().int().positive(), ...ReadInputFields }),
+      outputSchema: AuthenticatedDomainSchema,
     },
-    async ({ id }) => ({
-      content: [
-        { type: 'text', text: jsonText(await client.getAuthenticatedDomain(id)) },
-      ],
-    }),
+    async ({ id, response_format }) => {
+      const domain = await client.getAuthenticatedDomain(id);
+      return jsonReadResult(domain, undefined, response_format);
+    },
   );
 
   server.registerTool(
     'list_branded_links',
     {
       description: 'List link branding (click-tracking domain) records.',
-      inputSchema: z.object({}),
+      inputSchema: z.object({ ...ListPagingInputFields }),
+      outputSchema: BrandedLinksListOutputSchema,
     },
-    async () => ({
-      content: [{ type: 'text', text: jsonText(await client.listBrandedLinks()) }],
-    }),
+    async (params) => {
+      const links = await client.listBrandedLinks();
+      const { items, pagination } = paginateArray(
+        links,
+        params.limit,
+        params.offset,
+      );
+      return jsonReadResult(
+        { ...pagination, links: items },
+        jsonText(items),
+        params.response_format,
+      );
+    },
   );
 
   server.registerTool(
     'get_branded_link',
     {
       description: 'Read one branded link record by ID.',
-      inputSchema: z.object({ id: z.number().int().positive() }),
+      inputSchema: z.object({ id: z.number().int().positive(), ...ReadInputFields }),
+      outputSchema: BrandedLinkSchema,
     },
-    async ({ id }) => ({
-      content: [{ type: 'text', text: jsonText(await client.getBrandedLink(id)) }],
-    }),
+    async ({ id, response_format }) => {
+      const link = await client.getBrandedLink(id);
+      return jsonReadResult(link, undefined, response_format);
+    },
   );
 
   server.registerTool(
@@ -136,22 +189,35 @@ export function registerAccountTools(server: McpServer, client: SendGridClient) 
     {
       description:
         'List SendGrid account alerts (usage limits and stats notifications).',
-      inputSchema: z.object({}),
+      inputSchema: z.object({ ...ListPagingInputFields }),
+      outputSchema: AlertsListOutputSchema,
     },
-    async () => ({
-      content: [{ type: 'text', text: jsonText(await client.listAlerts()) }],
-    }),
+    async (params) => {
+      const alerts = await client.listAlerts();
+      const { items, pagination } = paginateArray(
+        alerts,
+        params.limit,
+        params.offset,
+      );
+      return jsonReadResult(
+        { ...pagination, alerts: items },
+        jsonText(items),
+        params.response_format,
+      );
+    },
   );
 
   server.registerTool(
     'get_alert',
     {
       description: 'Read one SendGrid alert by ID.',
-      inputSchema: z.object({ id: z.number().int().positive() }),
+      inputSchema: z.object({ id: z.number().int().positive(), ...ReadInputFields }),
+      outputSchema: SendGridAlertSchema,
     },
-    async ({ id }) => ({
-      content: [{ type: 'text', text: jsonText(await client.getAlert(id)) }],
-    }),
+    async ({ id, response_format }) => {
+      const alert = await client.getAlert(id);
+      return jsonReadResult(alert, undefined, response_format);
+    },
   );
 
   server.registerTool(

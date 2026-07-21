@@ -5,7 +5,20 @@ import type {
   SendGridClient,
   TrackingSettingName,
 } from '../client';
-import { ensureSafeToolRegistration } from './tool_utils';
+import {
+  InboundParseSettingsListOutputSchema,
+  jsonReadResult,
+  jsonText,
+  MailSettingsListOutputSchema,
+  paginateArray,
+  SettingDetailOutputSchema,
+  TrackingSettingsListOutputSchema,
+} from './output_schemas';
+import {
+  ensureSafeToolRegistration,
+  ListPagingInputFields,
+  ReadInputFields,
+} from './tool_utils';
 
 const ConfirmTokenSchema = z
   .literal('CONFIRM')
@@ -38,10 +51,6 @@ const SettingValueSchema = z.union([
   z.array(z.string()),
 ]);
 
-function jsonText(data: unknown): string {
-  return JSON.stringify(data, null, 2);
-}
-
 export function registerConsoleSettingsTools(
   server: McpServer,
   client: SendGridClient,
@@ -53,16 +62,26 @@ export function registerConsoleSettingsTools(
     {
       description:
         'List SendGrid mail settings summaries (footer, bounce purge, spam check, etc.).',
-      inputSchema: z.object({
-        limit: z.number().int().min(1).max(1000).optional(),
-        offset: z.number().int().min(0).optional(),
-      }),
+      inputSchema: z.object({ ...ListPagingInputFields }),
+      outputSchema: MailSettingsListOutputSchema,
     },
-    async (params) => ({
-      content: [
-        { type: 'text', text: jsonText(await client.listMailSettings(params)) },
-      ],
-    }),
+    async (params) => {
+      const response = await client.listMailSettings({
+        limit: params.limit,
+        offset: params.offset,
+      });
+      const settings = response.result ?? [];
+      const { items, pagination } = paginateArray(
+        settings,
+        params.limit,
+        params.offset,
+      );
+      return jsonReadResult(
+        { ...pagination, settings: items },
+        jsonText(response),
+        params.response_format,
+      );
+    },
   );
 
   server.registerTool(
@@ -71,18 +90,16 @@ export function registerConsoleSettingsTools(
       description: 'Read one SendGrid mail setting by name.',
       inputSchema: z.object({
         setting: MailSettingNameSchema,
+        ...ReadInputFields,
       }),
+      outputSchema: SettingDetailOutputSchema,
     },
-    async ({ setting }) => ({
-      content: [
-        {
-          type: 'text',
-          text: jsonText(
-            await client.getMailSetting(setting as MailSettingName),
-          ),
-        },
-      ],
-    }),
+    async ({ setting, response_format }) =>
+      jsonReadResult(
+        await client.getMailSetting(setting as MailSettingName),
+        undefined,
+        response_format,
+      ),
   );
 
   server.registerTool(
@@ -90,13 +107,23 @@ export function registerConsoleSettingsTools(
     {
       description:
         'List SendGrid tracking settings summaries (click, open, subscription, etc.).',
-      inputSchema: z.object({}),
+      inputSchema: z.object({ ...ListPagingInputFields }),
+      outputSchema: TrackingSettingsListOutputSchema,
     },
-    async () => ({
-      content: [
-        { type: 'text', text: jsonText(await client.listTrackingSettings()) },
-      ],
-    }),
+    async (params) => {
+      const response = await client.listTrackingSettings();
+      const settings = response.result ?? [];
+      const { items, pagination } = paginateArray(
+        settings,
+        params.limit,
+        params.offset,
+      );
+      return jsonReadResult(
+        { ...pagination, settings: items },
+        jsonText(response),
+        params.response_format,
+      );
+    },
   );
 
   server.registerTool(
@@ -105,34 +132,38 @@ export function registerConsoleSettingsTools(
       description: 'Read one SendGrid tracking setting by name.',
       inputSchema: z.object({
         setting: TrackingSettingNameSchema,
+        ...ReadInputFields,
       }),
+      outputSchema: SettingDetailOutputSchema,
     },
-    async ({ setting }) => ({
-      content: [
-        {
-          type: 'text',
-          text: jsonText(
-            await client.getTrackingSetting(setting as TrackingSettingName),
-          ),
-        },
-      ],
-    }),
+    async ({ setting, response_format }) =>
+      jsonReadResult(
+        await client.getTrackingSetting(setting as TrackingSettingName),
+        undefined,
+        response_format,
+      ),
   );
 
   server.registerTool(
     'list_inbound_parse_settings',
     {
       description: 'List inbound parse (receive email webhook) settings.',
-      inputSchema: z.object({}),
+      inputSchema: z.object({ ...ListPagingInputFields }),
+      outputSchema: InboundParseSettingsListOutputSchema,
     },
-    async () => ({
-      content: [
-        {
-          type: 'text',
-          text: jsonText(await client.listInboundParseSettings()),
-        },
-      ],
-    }),
+    async (params) => {
+      const settings = await client.listInboundParseSettings();
+      const { items, pagination } = paginateArray(
+        settings,
+        params.limit,
+        params.offset,
+      );
+      return jsonReadResult(
+        { ...pagination, settings: items },
+        jsonText(items),
+        params.response_format,
+      );
+    },
   );
 
   server.registerTool(

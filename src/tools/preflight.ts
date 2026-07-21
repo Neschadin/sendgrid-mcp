@@ -6,6 +6,10 @@ import {
   type SendGridMailSendPayload,
 } from '../client';
 import { ensureSafeToolRegistration } from './tool_utils';
+import {
+  PreflightOutputSchema,
+  SendWithPreflightOutputSchema,
+} from './output_schemas';
 
 const PROVIDER_FREE_FROM_DOMAINS = new Set([
   'gmail.com',
@@ -594,36 +598,12 @@ export function registerPreflightTools(
   client: SendGridClient,
 ) {
   ensureSafeToolRegistration(server);
-  const PreflightOutputSchema = z.object({
-    ok: z.boolean(),
-    blockers: z.array(
-      z.object({
-        severity: z.literal('blocker'),
-        code: z.string(),
-        message: z.string(),
-      }),
-    ),
-    warnings: z.array(
-      z.object({
-        severity: z.literal('warning'),
-        code: z.string(),
-        message: z.string(),
-      }),
-    ),
-    info: z.array(
-      z.object({
-        severity: z.literal('info'),
-        code: z.string(),
-        message: z.string(),
-      }),
-    ),
-  });
 
   server.registerTool(
     'validate_send_request',
     {
       description:
-        'Run SendGrid preflight checks for payload validity, template/sender health, and deliverability risks.',
+        'Run this before any send_* call. Validates /v3/mail/send payload shape, active dynamic template, sender identity (domain authentication or verified sender), link branding alignment, recipient suppressions, and scheduling limits (send_at must be in the future and within 72 hours per SendGrid Mail Send API). Returns blockers and warnings without sending mail.',
       inputSchema: z.object({
         request: SendRequestSchema,
         partnerAccountId: z
@@ -658,7 +638,7 @@ export function registerPreflightTools(
     'send_with_preflight',
     {
       description:
-        'Validate then send. The email is sent only if no blocking preflight issues are found.',
+        'Preferred production send path: runs validate_send_request checks first, then POST /v3/mail/send only when no blockers (and optionally no warnings with abortOnWarnings). Use validate_send_request alone for a dry-run review before calling send_email_advanced or send_template_email_advanced.',
       inputSchema: z.object({
         request: SendRequestSchema,
         partnerAccountId: z.string().optional(),
@@ -668,12 +648,7 @@ export function registerPreflightTools(
           .optional()
           .describe('If true, warnings also block sending (default: false)'),
       }),
-      outputSchema: z.object({
-        sent: z.boolean(),
-        report: PreflightOutputSchema,
-        statusCode: z.number().nullable(),
-        messageId: z.string().nullable(),
-      }),
+      outputSchema: SendWithPreflightOutputSchema,
     },
     async ({
       request,

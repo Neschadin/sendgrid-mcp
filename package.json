@@ -1,6 +1,6 @@
 {
   "name": "sendgrid-mcp",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "SendGrid MCP Server — templates, preflight send, diagnostics, account & console settings",
   "type": "module",
   "license": "MIT",
@@ -37,9 +37,9 @@
     "build:release": "bash scripts/build-release.sh",
     "inspect": "bunx @modelcontextprotocol/inspector bun src/index.ts",
     "typecheck": "bun build src/index.ts --outdir .tmp-typecheck --target bun",
-    "typecheck:tsc": "NODE_OPTIONS=--max-old-space-size=8192 tsc --noEmit --skipLibCheck",
     "lint": "oxlint",
-    "smoke": "bun run scripts/smoke-register-tools.ts"
+    "smoke": "bun run scripts/smoke-register-tools.ts",
+    "test": "bun test tests"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",
@@ -47,7 +47,7 @@
   },
   "devDependencies": {
     "@types/bun": "1.3.14",
-    "oxlint": "1.71.0",
+    "oxlint": "1.74.0",
     "typescript": "6.0.3"
   }
 }

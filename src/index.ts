@@ -54,7 +54,7 @@ async function main() {
   const client = new SendGridClient(env.apiKey, env.apiBaseUrl);
 
   const server = new McpServer({
-    name: 'sendgrid',
+    name: 'sendgrid-mcp-server',
     version,
   });
 

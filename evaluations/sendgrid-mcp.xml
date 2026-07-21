@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<evaluation>
+  <qa_pair>
+    <question>What is the MCP server name declared at startup in sendgrid-mcp v2?</question>
+    <answer>sendgrid-mcp-server</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>What prefix is automatically added to every tool name exposed in the MCP handshake?</question>
+    <answer>sendgrid_</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>What literal value must be passed as confirmToken on mutating tools that require it?</question>
+    <answer>CONFIRM</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>What is the maximum number of categories allowed per /v3/mail/send request enforced by validate_send_request?</question>
+    <answer>10</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Within how many hours must send_at be scheduled according to preflight checks (numeric hours only)?</question>
+    <answer>72</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>What is the maximum number of personalizations per /v3/mail/send request enforced by preflight?</question>
+    <answer>1000</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Which tool should be run for a dry-run validation before calling send_email_advanced?</question>
+    <answer>sendgrid_validate_send_request</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>What are the two required environment variables to start the server?</question>
+    <answer>SENDGRID_API_KEY SENDGRID_FROM_EMAIL</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>When SENDGRID_REGION is set to eu, what API base URL is selected by default?</question>
+    <answer>https://api.eu.sendgrid.com/v3</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Where does the MCP server write log output in stdio mode (stdout or stderr)?</question>
+    <answer>stderr</answer>
+  </qa_pair>
+</evaluation>

@@ -1,0 +1,19 @@
+---
+description: Use Zod v4 MCP (Inkeep) for Zod schema and API questions in this project
+alwaysApply: true
+---
+
+# Zod (v4) MCP
+
+When working with Zod schemas, validation, or output typing in this repository, use the project MCP server `inkeepZodMcp` (`https://mcp.inkeep.com/zod/mcp`).
+
+<MCP_USE_GUIDELINE>
+  <INSTRUCTION>
+    If you are working with Zod documentation or have questions about Zod v4 APIs, schemas, or implementation details, use the following MCP tools.
+  </INSTRUCTION>
+  <TOOLS>
+    The following Zod (v4) tools are at your disposal:
+    - "search-zod-v4-docs": Search Zod v4 documentation, GitHub issues, release notes, and help center.
+    - "ask-question-about-zod-v4": Ask specific questions about Zod v4 APIs, schema patterns, or implementation details.
+  </TOOLS>
+</MCP_USE_GUIDELINE>

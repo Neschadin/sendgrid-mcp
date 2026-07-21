@@ -2,11 +2,15 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { SendGridClient } from '../client';
 import {
+  BatchIdOutputSchema,
+  SendTestEmailOutputSchema,
+} from './output_schemas';
+import {
   SendRequestSchema,
   runSendPreflight,
   toMailSendPayload,
 } from './preflight';
-import { ensureSafeToolRegistration } from './tool_utils';
+import { ensureSafeToolRegistration, SEND_PREFLIGHT_HINT } from './tool_utils';
 
 const ConfirmTokenSchema = z
   .literal('CONFIRM')
@@ -28,7 +32,7 @@ export function registerEmailTools(
     'send_email_advanced',
     {
       description:
-        'Send email with full /mail/send payload surface (content/template, tracking, asm, scheduling, categories, etc).',
+        `Send email with full /mail/send payload surface (content/template, tracking, asm, scheduling, categories, etc).${SEND_PREFLIGHT_HINT}`,
       inputSchema: z.object({
         request: SendRequestSchema,
       }),
@@ -55,7 +59,7 @@ export function registerEmailTools(
     'send_template_email_advanced',
     {
       description:
-        'Send a dynamic-template email with optional cc/bcc, reply-to, asm, categories, custom args, and scheduling.',
+        `Send a dynamic-template email with optional cc/bcc, reply-to, asm, categories, custom args, and scheduling.${SEND_PREFLIGHT_HINT}`,
       inputSchema: z.object({
         to: z.array(RecipientSchema).min(1),
         templateId: z.string().describe('Template ID, e.g. d-xxxxxxxxxxxxxxxx'),
@@ -150,7 +154,7 @@ export function registerEmailTools(
     'send_sandbox_email',
     {
       description:
-        'Send using mail_settings.sandbox_mode=true for payload/template validation without live recipient delivery.',
+        `Send using mail_settings.sandbox_mode=true for payload/template validation without live recipient delivery.${SEND_PREFLIGHT_HINT}`,
       inputSchema: z.object({
         request: SendRequestSchema,
       }),
@@ -186,10 +190,13 @@ export function registerEmailTools(
       description:
         'Create a SendGrid batch ID for scheduled sends and later pause/cancel control.',
       inputSchema: z.object({}),
+      outputSchema: BatchIdOutputSchema,
     },
     async () => {
       const batch = await client.createBatchId();
+      const structured = { batchId: batch.batch_id };
       return {
+        structuredContent: structured,
         content: [{ type: 'text', text: `Batch ID: ${batch.batch_id}` }],
       };
     },
@@ -199,7 +206,7 @@ export function registerEmailTools(
     'schedule_email',
     {
       description:
-        'Schedule an email by setting send_at. Creates batch ID automatically when not provided.',
+        `Schedule an email by setting send_at. Creates batch ID automatically when not provided.${SEND_PREFLIGHT_HINT}`,
       inputSchema: z.object({
         request: SendRequestSchema,
         sendAt: z.number().int().describe('Unix timestamp in seconds'),
@@ -330,7 +337,7 @@ export function registerEmailTools(
     'send_test_email',
     {
       description:
-        'Send a test email using a template with mock data to a given address',
+        'Send a test email using a template with mock data. Uses mail_settings.sandbox_mode by default (SendGrid accepts but does not deliver). Set liveDelivery=true with confirmToken="CONFIRM" for real delivery.',
       inputSchema: z.object({
         to: z.string().email().describe('Recipient email for the test'),
         templateId: z.string().describe('Template ID, e.g. d-xxxxxxxxxxxxxxxx'),
@@ -351,6 +358,7 @@ export function registerEmailTools(
           .describe('Default false. If true, sends live mail instead of sandbox mode.'),
         confirmToken: ConfirmTokenSchema.optional(),
       }),
+      outputSchema: SendTestEmailOutputSchema,
     },
     async ({
       to,
