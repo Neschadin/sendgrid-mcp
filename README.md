@@ -63,8 +63,10 @@ Each user runs the server locally with **their own** API key (bring-your-own-key
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SENDGRID_FROM_NAME` | `SendGrid MCP` | Default From display name |
-| `SENDGRID_REGION` | `global` | Use `eu` for `https://api.eu.sendgrid.com/v3` |
+| `SENDGRID_REGION` | `global` | Use `eu` for `https://api.eu.sendgrid.com/v3`. Also makes an empty Email Activity search fall back to Email Logs |
 | `SENDGRID_API_BASE_URL` | `https://api.sendgrid.com/v3` | Full SendGrid API base URL override |
+| `SENDGRID_ON_BEHALF_OF` | — | `on-behalf-of` header value: a subuser username, or `account-id <id>` for a customer account |
+| `READ_ONLY` | `false` | When `true`, tools that send mail or change SendGrid return an error before any request |
 | `SENDGRID_MCP_LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` |
 
 ### Optional: local Event Webhook receiver
@@ -131,7 +133,8 @@ Restart the client after changing MCP config.
 
 ## Safety
 
-- **Send tools** can enqueue real email. Prefer `sendgrid_send_with_preflight` in automation.
+- **Send tools** can enqueue real email. Prefer `sendgrid_send_with_preflight` in automation. Set `READ_ONLY=true` to refuse every send and mutation before the API call.
+- **Subusers:** `SENDGRID_ON_BEHALF_OF` is sent as the `on-behalf-of` header on every request (subuser username, or `account-id <id>`).
 - **Mutating console tools** require `confirmToken: "CONFIRM"` (alerts, mail/tracking settings, verified senders, domains, webhooks).
 - **Email Activity** (`/v3/messages`) may require the [Email Activity add-on](https://www.twilio.com/docs/sendgrid/api-reference/email-activity/filter-all-messages).
 

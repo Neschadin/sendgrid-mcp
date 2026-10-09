@@ -16,8 +16,8 @@ Out of scope: contact/list marketing CRUD.
 
 ### Runbook: Delivery Incident
 
-1. `sendgrid_search_message_activity` / `sendgrid_get_message_activity`
-2. `sendgrid_check_suppression` and `sendgrid_list_suppressions`
+1. `sendgrid_search_message_activity` / `sendgrid_get_message_activity` (or `sendgrid_search_email_logs` when Activity is empty or 403, especially on EU)
+2. `sendgrid_check_suppression` and `sendgrid_list_suppressions`; lift a hit with `sendgrid_delete_suppression`
 3. `sendgrid_triage_delivery_issue`
 4. If webhook exists: `sendgrid_get_received_webhook_events` + `sendgrid_analyze_engagement_anomalies`
 
@@ -94,7 +94,7 @@ Out of scope: contact/list marketing CRUD.
 - **Caveats:** Local constants parsing is regex-based.
 
 ### `sendgrid_validate_send_request`
-- **Purpose:** Preflight checks before send. Run this before any `send_*` call. Validates `/v3/mail/send` payload shape, active dynamic template, sender identity (domain authentication or verified sender), link branding alignment, recipient suppressions, and scheduling limits (`send_at` future + within 72 hours).
+- **Purpose:** Preflight checks before send. Run this before any `send_*` call. Validates `/v3/mail/send` payload shape, active dynamic template, sender identity (domain authentication or verified sender), link branding alignment, recipient suppressions (including ASM group unsubscribe when `asm.groupId` is set), and scheduling limits (`send_at` future + within 72 hours).
 - **Inputs:** `request`, optional `partnerAccountId`, `checkSenderIdentity`.
 - **Output:** `structuredContent` with `ok`, `blockers`, `warnings`, `info`.
 - **Typical flow:** Dry-run review before every production send.
@@ -174,16 +174,22 @@ Out of scope: contact/list marketing CRUD.
 - **Caveats:** Depth depends on API access and provided identifiers.
 
 ### `sendgrid_search_message_activity`
-- **Purpose:** Query Email Activity (`/v3/messages`) by SendGrid query syntax.
-- **Inputs:** `query`, optional `limit`.
-- **Typical flow:** Identify affected messages in an incident.
-- **Caveats:** May require Email Activity add-on; query syntax must be valid.
+- **Purpose:** Query Email Activity (`GET /v3/messages`) by SendGrid query syntax.
+- **Inputs:** `query` and/or `xMessageId`, optional `limit`. `offset` above 0 is rejected: this API has no offset.
+- **Typical flow:** Identify affected messages in an incident. Pass the Mail Send `x-message-id` response header as `xMessageId`; it is compiled to `msg_id LIKE '<id>%'`.
+- **Caveats:** May require the Email Activity add-on. `limit` is 1–1000. There is no cursor. On 403/404, and on an empty result when `SENDGRID_REGION=eu`, the tool falls back to `POST /v3/logs`.
+
+### `sendgrid_search_email_logs`
+- **Purpose:** Search Email Logs (`POST /v3/logs`) when Activity is missing, especially for EU regional subusers.
+- **Inputs:** optional `query`, `limit` (1–1000), `subusers` (parent account, exactly one username).
+- **Typical flow:** `to_email='user@example.com'`, `status IN ('bounced','deferred')`, or `sg_message_id='<full id>'`.
+- **Caveats:** Allowed fields are `sg_message_id`, `subject`, `to_email`, `status`, `reason`, `categories`, `sg_message_id_created_at`. Operators are `=` / `IN` / time comparisons. Combine with `AND`. No nesting. No event chain.
 
 ### `sendgrid_get_message_activity`
-- **Purpose:** Fetch one message activity by `msg_id`.
-- **Inputs:** `msgId`.
-- **Typical flow:** Deep dive on exact message status chain.
-- **Caveats:** Same add-on access constraints as activity search.
+- **Purpose:** Fetch one message by `msg_id`, including the event chain (`reason`, `bounce_type`, `mx_server`, `asm_group_id`, `outbound_ip`).
+- **Inputs:** `msgId` — full `msg_id` or the Mail Send `x-message-id`.
+- **Typical flow:** Deep dive after search. An `x-message-id` is resolved with `msg_id LIKE` and then re-fetched.
+- **Caveats:** Activity may require the add-on. A full id that 403/404s is loaded from Email Logs, which has status and reason but no events. EU regional subusers often have no Activity detail.
 
 ### `sendgrid_list_suppressions`
 - **Purpose:** Enumerate suppression entries by type.
@@ -192,16 +198,28 @@ Out of scope: contact/list marketing CRUD.
 - **Caveats:** Does not mutate suppression lists. `global_unsubscribes` is an alias for SendGrid global unsubscribe listing.
 
 ### `sendgrid_check_suppression`
-- **Purpose:** Check bounce, block, global unsubscribe, spam report, and invalid-email suppression flags for one recipient.
+- **Purpose:** Check bounce, block, global unsubscribe, spam report, invalid-email, and ASM group suppression flags for one recipient (`GET /v3/asm/suppressions/{email}`).
 - **Inputs:** `email`.
-- **Typical flow:** Per-recipient delivery triage.
-- **Caveats:** Focused lookup only.
+- **Typical flow:** Per-recipient delivery triage. Group rows include `id`, `name`, and `suppressed`.
+- **Caveats:** The ASM call returns every group, not only suppressed ones. A failed group lookup is reported in `groupLookupError` and does not clear the other flags.
+
+### `sendgrid_delete_suppression`
+- **Purpose:** Remove one recipient from bounce, block, spam report, invalid email, global unsubscribe, or a single ASM group.
+- **Inputs:** `confirmToken="CONFIRM"`, `email`, `type` (`bounce` | `block` | `spam_report` | `invalid_email` | `global` | `group`), `groupId` when `type=group`.
+- **Typical flow:** After `check_suppression` shows the list that is dropping mail.
+- **Caveats:** Does not delete the ASM group. `READ_ONLY=true` blocks the call before the API request.
 
 ### `sendgrid_get_email_stats`
-- **Purpose:** Aggregate daily delivery metrics.
-- **Inputs:** `startDate`, optional `endDate`.
-- **Typical flow:** Trend and blast-radius checks.
-- **Caveats:** Aggregated metrics, not per-message forensics.
+- **Purpose:** Aggregate delivery metrics. `dimension=global` is the daily account rollup.
+- **Inputs:** `startDate`, optional `endDate`, `dimension` (`global` | `category` | `category_sums` | `mailbox_provider` | `geo` | `browser` | `device` | `client`), `aggregatedBy` (`day` | `week` | `month`). `category` requires `categories`. Optional `mailboxProviders`, `country`, `browsers`, `limit`.
+- **Typical flow:** Trend and blast-radius checks. Use `category` for categories sent on the mail payload, `mailbox_provider` for provider-specific drops.
+- **Caveats:** Aggregated metrics, not per-message forensics. Browser, device, and client stats retain about 7 days.
+
+### `sendgrid_get_scopes`
+- **Purpose:** List scopes on the current API key (`GET /v3/scopes`).
+- **Inputs:** none.
+- **Typical flow:** After a 403, before guessing which scope is missing.
+- **Caveats:** Read-only. With `SENDGRID_ON_BEHALF_OF` set, scopes are evaluated for that subuser/customer account.
 
 ### `sendgrid_list_event_webhooks`
 - **Purpose:** List Event Webhook configurations in SendGrid.
@@ -343,6 +361,7 @@ Tool risk classification:
 - `sendgrid_resume_scheduled_send`: `mutates-sendgrid`
 - `sendgrid_cancel_scheduled_send`: `mutates-sendgrid`
 - `sendgrid_search_message_activity`: `read-only`
+- `sendgrid_search_email_logs`: `read-only`
 - `sendgrid_get_message_activity`: `read-only`
 - `sendgrid_list_event_webhooks`: `read-only`
 - `sendgrid_get_event_webhook`: `read-only`
@@ -356,7 +375,9 @@ Tool risk classification:
 - `sendgrid_analyze_engagement_anomalies`: `read-only`
 - `sendgrid_list_suppressions`: `read-only`
 - `sendgrid_check_suppression`: `read-only`
+- `sendgrid_delete_suppression`: `mutates-sendgrid`
 - `sendgrid_get_email_stats`: `read-only`
+- `sendgrid_get_scopes`: `read-only`
 - `sendgrid_get_account_info`: `read-only`
 - `sendgrid_get_user_profile`: `read-only`
 - `sendgrid_get_user_credits`: `read-only`

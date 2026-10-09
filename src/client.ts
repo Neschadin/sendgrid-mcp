@@ -2,10 +2,22 @@ const DEFAULT_SENDGRID_BASE = 'https://api.sendgrid.com/v3';
 const MAX_RATE_LIMIT_RETRIES = 3;
 const DEFAULT_RETRY_DELAY_MS = 1000;
 
-type QueryParamValue = string | number | boolean | undefined;
+type QueryParamValue = string | number | boolean | undefined | readonly string[];
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+function readAsmGroups(value: unknown): AsmGroupSuppression[] {
+  const rows = Array.isArray(value)
+    ? value
+    : isObject(value) && Array.isArray(value['suppressions'])
+      ? value['suppressions']
+      : [];
+  return rows.filter((row): row is AsmGroupSuppression => {
+    if (!isObject(row) || typeof row['id'] !== 'number') return false;
+    return typeof row['suppressed'] === 'boolean';
+  });
 }
 
 function coerceArray<T>(value: unknown): T[] {
@@ -267,6 +279,60 @@ export interface SendGridMessageActivityListResponse {
   messages: SendGridMessageActivity[];
 }
 
+export interface EmailLogMessage {
+  from_email?: string;
+  to_email?: string;
+  subject?: string;
+  status?: string;
+  reason?: string;
+  sg_message_id?: string;
+  sg_message_id_created_at?: string;
+}
+
+export interface EmailLogListResponse {
+  messages: EmailLogMessage[];
+}
+
+export interface AsmGroupSuppression {
+  id: number;
+  name: string;
+  description?: string;
+  is_default?: boolean;
+  suppressed: boolean;
+}
+
+export type SuppressionDeleteType =
+  | 'bounce'
+  | 'block'
+  | 'spam_report'
+  | 'invalid_email'
+  | 'global'
+  | 'group';
+
+export type StatsDimension =
+  | 'global'
+  | 'category'
+  | 'category_sums'
+  | 'mailbox_provider'
+  | 'geo'
+  | 'browser'
+  | 'device'
+  | 'client';
+
+export type StatsAggregation = 'day' | 'week' | 'month';
+
+export interface StatsQuery {
+  startDate: string;
+  endDate?: string;
+  dimension?: StatsDimension;
+  aggregatedBy?: StatsAggregation;
+  categories?: readonly string[];
+  mailboxProviders?: readonly string[];
+  country?: string;
+  browsers?: readonly string[];
+  limit?: number;
+}
+
 export interface EventWebhookSettings {
   id: string;
   enabled?: boolean;
@@ -511,10 +577,19 @@ export class SendGridClient {
 
   private readonly apiKey: string;
   private readonly baseUrl: string;
+  private readonly onBehalfOf?: string;
+  readonly preferEmailLogs: boolean;
 
-  constructor(apiKey: string, baseUrl = DEFAULT_SENDGRID_BASE) {
+  constructor(
+    apiKey: string,
+    baseUrl = DEFAULT_SENDGRID_BASE,
+    options?: { onBehalfOf?: string; preferEmailLogs?: boolean },
+  ) {
     this.apiKey = apiKey;
     this.baseUrl = baseUrl.replace(/\/+$/u, '');
+    const onBehalfOf = options?.onBehalfOf?.trim();
+    this.onBehalfOf = onBehalfOf ? onBehalfOf : undefined;
+    this.preferEmailLogs = options?.preferEmailLogs ?? false;
   }
 
   private buildUrl(
@@ -525,9 +600,12 @@ export class SendGridClient {
     if (!params) return url;
 
     for (const [key, value] of Object.entries(params)) {
-      if (value !== undefined) {
-        url.searchParams.set(key, String(value));
+      if (value === undefined) continue;
+      if (Array.isArray(value)) {
+        for (const item of value) url.searchParams.append(key, String(item));
+        continue;
       }
+      url.searchParams.set(key, String(value));
     }
 
     return url;
@@ -547,6 +625,7 @@ export class SendGridClient {
         headers: {
           Authorization: `Bearer ${this.apiKey}`,
           'Content-Type': 'application/json',
+          ...(this.onBehalfOf ? { 'on-behalf-of': this.onBehalfOf } : {}),
         },
         body: body !== undefined ? JSON.stringify(body) : undefined,
       });
@@ -947,10 +1026,13 @@ export class SendGridClient {
     unsubscribed: boolean;
     spamReported: boolean;
     invalidEmail: boolean;
+    groupUnsubscribed: boolean;
+    groupSuppressions: AsmGroupSuppression[];
+    groupLookupError?: string;
     details: Record<string, unknown>;
   }> {
     const encoded = encodeURIComponent(email);
-    const [bounces, blocks, globalUnsubscribe, spam, invalidEmails] =
+    const [bounces, blocks, globalUnsubscribe, spam, invalidEmails, groups] =
       await Promise.allSettled([
       this.request<SuppressionEntry[]>(
         'GET',
@@ -969,6 +1051,7 @@ export class SendGridClient {
         'GET',
         `/suppression/invalid_emails/${encoded}`,
       ),
+      this.request<unknown>('GET', `/asm/suppressions/${encoded}`),
     ]);
 
     const get = (result: PromiseSettledResult<SuppressionEntry[]>) =>
@@ -979,6 +1062,11 @@ export class SendGridClient {
     const globallyUnsubscribed =
       typeof global['recipient_email'] === 'string' ||
       Object.keys(global).length > 0;
+    const groupPayload =
+      groups.status === 'fulfilled' ? readAsmGroups(groups.value) : [];
+    const groupLookupError =
+      groups.status === 'rejected' ? String(groups.reason) : undefined;
+    const suppressedGroups = groupPayload.filter((group) => group.suppressed);
 
     return {
       bounced: get(bounces).length > 0,
@@ -986,21 +1074,112 @@ export class SendGridClient {
       unsubscribed: globallyUnsubscribed,
       spamReported: get(spam).length > 0,
       invalidEmail: get(invalidEmails).length > 0,
+      groupUnsubscribed: suppressedGroups.length > 0,
+      groupSuppressions: groupPayload,
+      ...(groupLookupError ? { groupLookupError } : {}),
       details: {
         bounces: get(bounces),
         blocks: get(blocks),
         globalUnsubscribe: global,
         spamReports: get(spam),
         invalidEmails: get(invalidEmails),
+        asmGroups: groupPayload,
       },
     };
   }
 
-  getStats(startDate: string, endDate?: string): Promise<GlobalStats[]> {
-    return this.request<GlobalStats[]>('GET', '/stats', undefined, {
-      start_date: startDate,
-      aggregated_by: 'day',
-      end_date: endDate,
+  deleteSuppression(params: {
+    type: SuppressionDeleteType;
+    email: string;
+    groupId?: number;
+  }): Promise<void> {
+    const email = encodeURIComponent(params.email);
+    if (params.type === 'group') {
+      if (params.groupId === undefined) {
+        throw new Error('groupId is required to delete a group suppression');
+      }
+      return this.request<void>(
+        'DELETE',
+        `/asm/groups/${params.groupId}/suppressions/${email}`,
+      );
+    }
+    const pathByType: Record<Exclude<SuppressionDeleteType, 'group'>, string> =
+      {
+        bounce: `/suppression/bounces/${email}`,
+        block: `/suppression/blocks/${email}`,
+        spam_report: `/suppression/spam_reports/${email}`,
+        invalid_email: `/suppression/invalid_emails/${email}`,
+        global: `/asm/suppressions/global/${email}`,
+      };
+    return this.request<void>('DELETE', pathByType[params.type]);
+  }
+
+  searchEmailLogs(params: {
+    query?: string;
+    limit?: number;
+    subusers?: readonly string[];
+  }): Promise<EmailLogListResponse> {
+    return this.request<EmailLogListResponse>('POST', '/logs', {
+      ...(params.query ? { query: params.query } : {}),
+      ...(params.limit !== undefined ? { limit: params.limit } : {}),
+      ...(params.subusers && params.subusers.length > 0
+        ? { subusers: [...params.subusers] }
+        : {}),
+    });
+  }
+
+  getScopes(): Promise<{ scopes: string[] }> {
+    return this.request<{ scopes: string[] }>('GET', '/scopes');
+  }
+
+  getStats(startDate: string, endDate?: string): Promise<GlobalStats[]>;
+  getStats(params: StatsQuery): Promise<unknown>;
+  getStats(
+    startDateOrParams: string | StatsQuery,
+    endDate?: string,
+  ): Promise<GlobalStats[] | unknown> {
+    if (typeof startDateOrParams === 'string') {
+      return this.request<GlobalStats[]>('GET', '/stats', undefined, {
+        start_date: startDateOrParams,
+        aggregated_by: 'day',
+        end_date: endDate,
+      });
+    }
+
+    const dimension = startDateOrParams.dimension ?? 'global';
+    if (
+      dimension === 'category' &&
+      (startDateOrParams.categories?.length ?? 0) === 0
+    ) {
+      throw new Error(
+        'dimension=category requires categories. GET /v3/categories/stats does not return every category unless they are named.',
+      );
+    }
+
+    const pathByDimension: Record<StatsDimension, string> = {
+      global: '/stats',
+      category: '/categories/stats',
+      category_sums: '/categories/stats/sums',
+      mailbox_provider: '/mailbox_providers/stats',
+      geo: '/geo/stats',
+      browser: '/browsers/stats',
+      device: '/devices/stats',
+      client: '/clients/stats',
+    };
+
+    return this.request<unknown>('GET', pathByDimension[dimension], undefined, {
+      start_date: startDateOrParams.startDate,
+      end_date: startDateOrParams.endDate,
+      aggregated_by: startDateOrParams.aggregatedBy ?? 'day',
+      categories:
+        dimension === 'category' ? startDateOrParams.categories : undefined,
+      mailbox_providers:
+        dimension === 'mailbox_provider'
+          ? startDateOrParams.mailboxProviders
+          : undefined,
+      country: dimension === 'geo' ? startDateOrParams.country : undefined,
+      browsers: dimension === 'browser' ? startDateOrParams.browsers : undefined,
+      limit: startDateOrParams.limit,
     });
   }
 

@@ -10,7 +10,10 @@ import {
 } from './tool_utils';
 import {
   AnalyzeEngagementOutputSchema,
+  AsmGroupSuppressionSchema,
   ClassifyErrorOutputSchema,
+  DeleteSuppressionOutputSchema,
+  EmailLogsOutputSchema,
   EmailStatsOutputSchema,
   EventWebhookListOutputSchema,
   EventWebhookSchema,
@@ -18,12 +21,21 @@ import {
   MessageActivitySchema,
   ReceivedWebhookEventsOutputSchema,
   SearchMessageActivityOutputSchema,
+  StatsDimensionSchema,
   TriageDeliveryOutputSchema,
   WebhookReceiverStatusOutputSchema,
   buildPaginationMeta,
   jsonReadResult,
   paginateArray,
 } from './output_schemas';
+import {
+  activityListMeta,
+  compileActivitySearch,
+  rejectActivityOffset,
+  searchActivityOrLogs,
+  summarizeActivityMessage,
+  traceMessage,
+} from './delivery_trace';
 import {
   clearStoredWebhookEvents,
   getStoredWebhookEvents,
@@ -40,6 +52,61 @@ type EngagementEvent = {
   sg_machine_open?: boolean;
   sg_message_id?: string;
 };
+
+const ConfirmTokenSchema = z
+  .literal('CONFIRM')
+  .describe('Required confirmation token');
+
+const SHORT_STATS_WINDOW = new Set(['browser', 'device', 'client']);
+
+function collectStatTotals(payload: unknown): {
+  totals: { requests: number; delivered: number; bounces: number; opens: number };
+  lines: string[];
+} {
+  const totals = { requests: 0, delivered: 0, bounces: 0, opens: 0 };
+  const lines: string[] = [];
+  const visit = (value: unknown, prefix: string) => {
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item, prefix);
+      return;
+    }
+    if (!value || typeof value !== 'object') return;
+    const record = value as Record<string, unknown>;
+    const date = typeof record['date'] === 'string' ? record['date'] : prefix;
+    const name = typeof record['name'] === 'string' ? record['name'] : undefined;
+    const metrics = record['metrics'];
+    if (metrics && typeof metrics === 'object') {
+      const metric = metrics as Record<string, unknown>;
+      if (typeof metric['requests'] === 'number') {
+        const delivered =
+          typeof metric['delivered'] === 'number' ? metric['delivered'] : 0;
+        const bounces =
+          typeof metric['bounces'] === 'number' ? metric['bounces'] : 0;
+        const opens = typeof metric['opens'] === 'number' ? metric['opens'] : 0;
+        totals.requests += metric['requests'];
+        totals.delivered += delivered;
+        totals.bounces += bounces;
+        totals.opens += opens;
+        const label = [date, name].filter((part) => part && part.length > 0).join(' ');
+        lines.push(
+          `${label}: requests=${metric['requests']} delivered=${delivered} bounces=${bounces} opens=${opens}`,
+        );
+      }
+    }
+    if (Array.isArray(record['stats'])) visit(record['stats'], date);
+  };
+  visit(payload, '');
+  return { totals, lines };
+}
+
+function asStatsSeries(payload: unknown): Record<string, unknown>[] | undefined {
+  if (!Array.isArray(payload)) return undefined;
+  const series = payload.filter(
+    (item): item is Record<string, unknown> =>
+      !!item && typeof item === 'object' && !Array.isArray(item),
+  );
+  return series.length > 0 ? series : undefined;
+}
 
 const DateSchema = z
   .string()
@@ -90,54 +157,79 @@ export function registerDiagnosticsTools(
     'search_message_activity',
     {
       description:
-        'Search SendGrid Email Activity API messages using query syntax (from_email, to_email, status, etc).',
-      inputSchema: z.object({
-        query: z
-          .string()
-          .min(1)
-          .describe(
-            'SendGrid Email Activity query, e.g. from_email="ops@acme.com" AND to_email="user@acme.com"',
-          ),
-        limit: z.number().int().min(1).max(1000).optional(),
-        offset: z.number().int().min(0).optional(),
-        response_format: ResponseFormatSchema.optional(),
-      }),
+        'Search SendGrid Email Activity (GET /v3/messages). Pass xMessageId for the Mail Send x-message-id header; it is compiled to msg_id LIKE. offset is not supported by this API. On 403/404, or an empty EU Activity result, falls back to POST /v3/logs.',
+      inputSchema: z
+        .object({
+          query: z
+            .string()
+            .min(1)
+            .optional()
+            .describe(
+              'SendGrid Email Activity query, e.g. from_email="ops@acme.com" AND to_email="user@acme.com"',
+            ),
+          xMessageId: z
+            .string()
+            .min(1)
+            .optional()
+            .describe(
+              'x-message-id from the POST /v3/mail/send response header. Compiled to msg_id LIKE \'<id>%\'. This is not the full msg_id.',
+            ),
+          limit: z.number().int().min(1).max(1000).optional(),
+          offset: z
+            .number()
+            .int()
+            .min(0)
+            .optional()
+            .describe(
+              'Not supported by GET /v3/messages. Values above 0 return an error. Narrow the query instead.',
+            ),
+          response_format: ResponseFormatSchema.optional(),
+        })
+        .superRefine((value, ctx) => {
+          if (!value.query && !value.xMessageId) {
+            ctx.addIssue({
+              code: 'custom',
+              message: 'Provide query or xMessageId',
+              path: ['query'],
+            });
+          }
+        }),
       outputSchema: SearchMessageActivityOutputSchema,
     },
-    async ({ query, limit, offset, response_format }) => {
+    async ({ query, xMessageId, limit, offset, response_format }) => {
       try {
+        rejectActivityOffset(offset);
         const pageLimit = limit ?? 25;
-        const response = await client.filterMessages(query, pageLimit);
-        const messages = response.messages ?? [];
-        const pageOffset = offset ?? 0;
-        const pagination = buildPaginationMeta({
-          totalCount: messages.length + pageOffset,
-          count: messages.length,
-          offset: pageOffset,
-        });
-        const structured = {
-          ...pagination,
-          has_more: messages.length >= pageLimit,
-          next_offset:
-            messages.length >= pageLimit ? pageOffset + messages.length : null,
-          messages,
-        };
-        const rows = messages.map((message) => {
-          return [
-            `- msg_id=${message.msg_id ?? 'n/a'}`,
-            `status=${String(message.status ?? 'n/a')}`,
-            `from=${String(message.from_email ?? 'n/a')}`,
-            `to=${String(message.to_email ?? 'n/a')}`,
-            `subject=${String(message.subject ?? 'n/a')}`,
-            `last_event_time=${String(message.last_event_time ?? 'n/a')}`,
-          ].join(' | ');
-        });
+        const compiled = compileActivitySearch({ query, xMessageId });
+        const found = await searchActivityOrLogs(client, compiled, pageLimit);
+        const messages = found.messages;
+        const pagination = activityListMeta(messages.length, pageLimit);
+        const notes = [found.note, pagination.note].filter(
+          (item): item is string => typeof item === 'string',
+        );
+        const rows = messages.map((message) => summarizeActivityMessage(message));
+        const body =
+          rows.length === 0
+            ? `No messages matched query: ${compiled}`
+            : [
+                `Matched messages: ${rows.length}`,
+                `Source: ${found.source}`,
+                '',
+                ...rows.map((row) => `- ${row}`),
+              ].join('\n');
 
         return jsonReadResult(
-          structured,
-          rows.length === 0
-            ? 'No messages matched query.'
-            : [`Matched messages: ${rows.length}`, '', ...rows].join('\n'),
+          {
+            total_count: pagination.total_count,
+            count: pagination.count,
+            offset: pagination.offset,
+            has_more: pagination.has_more,
+            next_offset: pagination.next_offset,
+            messages,
+            source: found.source,
+            ...(notes.length > 0 ? { note: notes.join('\n') } : {}),
+          },
+          [...notes, ...(notes.length > 0 ? [''] : []), body].join('\n'),
           response_format,
         );
       } catch (error) {
@@ -159,7 +251,7 @@ export function registerDiagnosticsTools(
     'get_message_activity',
     {
       description:
-        'Get SendGrid Email Activity details for one message by msg_id.',
+        'Get Email Activity for one message. msgId may be a full msg_id or the Mail Send x-message-id (resolved with msg_id LIKE). On Activity 403/404 for a full id, falls back to POST /v3/logs.',
       inputSchema: z.object({
         msgId: z.string().min(1),
         ...ReadInputFields,
@@ -168,8 +260,13 @@ export function registerDiagnosticsTools(
     },
     async ({ msgId, response_format }) => {
       try {
-        const message = await client.getMessageById(msgId);
-        return jsonReadResult(message, JSON.stringify(message, null, 2), response_format);
+        const traced = await traceMessage(client, msgId);
+        const summary = summarizeActivityMessage(traced.message);
+        return jsonReadResult(
+          traced.message,
+          [summary, ...(traced.note ? ['', traced.note] : []), '', JSON.stringify(traced.message, null, 2)].join('\n'),
+          response_format,
+        );
       } catch (error) {
         if (isSendGridApiError(error)) {
           const addonHint =
@@ -563,9 +660,9 @@ export function registerDiagnosticsTools(
 
       if (messageId) {
         try {
-          const message = await client.getMessageById(messageId);
+          const traced = await traceMessage(client, messageId);
           findings.push(
-            `Message activity for ${messageId}: status=${String(message.status ?? 'n/a')}, from=${String(message.from_email ?? 'n/a')}, to=${String(message.to_email ?? 'n/a')}, last_event_time=${String(message.last_event_time ?? 'n/a')}`,
+            `Message activity for ${messageId}: ${summarizeActivityMessage(traced.message)}${traced.note ? `. ${traced.note}` : ''}`,
           );
         } catch (error) {
           findings.push(
@@ -576,13 +673,16 @@ export function registerDiagnosticsTools(
 
       if (activityQuery) {
         try {
-          const activity = await client.filterMessages(
+          const activity = await searchActivityOrLogs(
+            client,
             activityQuery,
             activityLimit ?? 10,
           );
           findings.push(
-            `Email Activity search matched ${activity.messages?.length ?? 0} messages for query: ${activityQuery}`,
+            `Email Activity search matched ${activity.messages.length} messages via ${activity.source} for query: ${activityQuery}${activity.note ? `. ${activity.note}` : ''}`,
           );
+          const first = activity.messages[0];
+          if (first) findings.push(summarizeActivityMessage(first));
         } catch (error) {
           findings.push(
             `Email Activity search failed.\n${formatToolError(error)}`,
@@ -593,8 +693,12 @@ export function registerDiagnosticsTools(
       if (recipientEmail) {
         try {
           const suppression = await client.checkSuppression(recipientEmail);
+          const suppressedGroups = suppression.groupSuppressions
+            .filter((group) => group.suppressed)
+            .map((group) => `${group.id}:${group.name}`)
+            .join(', ');
           findings.push(
-            `Suppression status for ${recipientEmail}: bounced=${suppression.bounced}, blocked=${suppression.blocked}, unsubscribed=${suppression.unsubscribed}, spamReported=${suppression.spamReported}`,
+            `Suppression status for ${recipientEmail}: bounced=${suppression.bounced}, blocked=${suppression.blocked}, unsubscribed=${suppression.unsubscribed}, spamReported=${suppression.spamReported}, invalidEmail=${suppression.invalidEmail}, groupUnsubscribed=${suppression.groupUnsubscribed}${suppressedGroups ? ` groups=${suppressedGroups}` : ''}`,
           );
         } catch (error) {
           findings.push(`Suppression check failed.\n${formatToolError(error)}`);
@@ -1004,7 +1108,7 @@ export function registerDiagnosticsTools(
     'check_suppression',
     {
       description:
-        'Check if an email address is suppressed (bounce, block, global unsubscribe, spam report, or invalid email).',
+        'Check bounce, block, global unsubscribe, spam report, invalid email, and ASM group suppressions (GET /v3/asm/suppressions/{email}) for one recipient.',
       inputSchema: z.object({
         email: z.email().describe('Email address to check'),
         ...ReadInputFields,
@@ -1016,6 +1120,9 @@ export function registerDiagnosticsTools(
         unsubscribed: z.boolean(),
         spamReported: z.boolean(),
         invalidEmail: z.boolean(),
+        groupUnsubscribed: z.boolean(),
+        groupSuppressions: z.array(AsmGroupSuppressionSchema),
+        groupLookupError: z.string().optional(),
       }),
     },
     async ({ email, response_format }) => {
@@ -1027,6 +1134,7 @@ export function registerDiagnosticsTools(
         result.unsubscribed && 'GLOBAL UNSUBSCRIBE',
         result.spamReported && 'SPAM REPORTED',
         result.invalidEmail && 'INVALID EMAIL',
+        result.groupUnsubscribed && 'GROUP UNSUBSCRIBE',
       ].filter(Boolean);
 
       const status =
@@ -1041,6 +1149,18 @@ export function registerDiagnosticsTools(
         }
       }
 
+      if (result.groupLookupError) {
+        lines.push(`ASM group lookup failed: ${result.groupLookupError}`);
+      }
+      const suppressedGroups = result.groupSuppressions.filter(
+        (group) => group.suppressed,
+      );
+      if (suppressedGroups.length > 0) {
+        lines.push(
+          `ASM groups: ${suppressedGroups.map((group) => `${group.id} ${group.name}`).join(', ')}`,
+        );
+      }
+
       return jsonReadResult(
         {
           email,
@@ -1049,6 +1169,15 @@ export function registerDiagnosticsTools(
           unsubscribed: result.unsubscribed,
           spamReported: result.spamReported,
           invalidEmail: result.invalidEmail,
+          groupUnsubscribed: result.groupUnsubscribed,
+          groupSuppressions: result.groupSuppressions.map((group) => ({
+            id: group.id,
+            name: group.name || `group ${group.id}`,
+            suppressed: group.suppressed,
+          })),
+          ...(result.groupLookupError
+            ? { groupLookupError: result.groupLookupError }
+            : {}),
         },
         lines.join('\n'),
         response_format,
@@ -1059,71 +1188,154 @@ export function registerDiagnosticsTools(
   server.registerTool(
     'get_email_stats',
     {
-      description: 'Get global email delivery statistics for a date range',
+      description:
+        'Get email statistics. dimension=global is the account daily rollup. category requires categories. mailbox_provider, geo, browser, device, and client are the other SendGrid stats cuts. Browser, device, and client stats retain about 7 days.',
       inputSchema: z.object({
         startDate: DateSchema.describe('Start date YYYY-MM-DD'),
         endDate: DateSchema.optional().describe(
           'End date YYYY-MM-DD (defaults to today)',
         ),
+        dimension: StatsDimensionSchema.optional().describe(
+          'Default global. category requires categories. browser, device, and client only retain about 7 days.',
+        ),
+        aggregatedBy: z.enum(['day', 'week', 'month']).optional(),
+        categories: z.array(z.string().min(1)).max(25).optional(),
+        mailboxProviders: z.array(z.string().min(1)).max(10).optional(),
+        country: z.string().length(2).optional().describe('ISO country code for dimension=geo'),
+        browsers: z.array(z.string().min(1)).max(10).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
         ...ReadInputFields,
       }),
       outputSchema: EmailStatsOutputSchema,
     },
-    async ({ startDate, endDate, response_format }) => {
-      const stats = await client.getStats(startDate, endDate);
-      const emptyTotals = { requests: 0, delivered: 0, bounces: 0, opens: 0 };
-
-      if (stats.length === 0) {
-        return jsonReadResult(
-          {
-            startDate,
-            endDate: endDate ?? null,
-            totals: emptyTotals,
-          },
-          'No stats for the given range.',
-          response_format,
-        );
-      }
-
-      const rows = stats.map((day) => {
-        const m = day.stats[0]?.metrics;
-        if (!m) return `${day.date}: no data`;
-        const rate =
-          m.requests > 0 ? ((m.delivered / m.requests) * 100).toFixed(1) : '—';
-        return [
-          `${day.date}`,
-          `  requests=${m.requests}  delivered=${m.delivered} (${rate}%)`,
-          `  bounces=${m.bounces}  spam=${m.spam_reports}  unsubs=${m.unsubscribes}`,
-          `  opens=${m.opens}  clicks=${m.clicks}`,
-        ].join('\n');
+    async ({
+      startDate,
+      endDate,
+      dimension,
+      aggregatedBy,
+      categories,
+      mailboxProviders,
+      country,
+      browsers,
+      limit,
+      response_format,
+    }) => {
+      const selected = dimension ?? 'global';
+      const payload = await client.getStats({
+        startDate,
+        endDate,
+        dimension: selected,
+        aggregatedBy,
+        categories,
+        mailboxProviders,
+        country,
+        browsers,
+        limit,
       });
-
-      const total = stats.reduce(
-        (acc, day) => {
-          const m = day.stats[0]?.metrics;
-          if (!m) return acc;
-          acc.requests += m.requests;
-          acc.delivered += m.delivered;
-          acc.bounces += m.bounces;
-          acc.opens += m.opens;
-          return acc;
-        },
-        { requests: 0, delivered: 0, bounces: 0, opens: 0 },
-      );
+      const { totals, lines } = collectStatTotals(payload);
+      const note = SHORT_STATS_WINDOW.has(selected)
+        ? 'Browser, device, and client statistics retain about 7 days.'
+        : undefined;
+      const series = selected === 'global' ? undefined : asStatsSeries(payload);
 
       return jsonReadResult(
         {
           startDate,
           endDate: endDate ?? null,
-          totals: total,
+          dimension: selected,
+          aggregatedBy: aggregatedBy ?? 'day',
+          totals,
+          ...(note ? { note } : {}),
+          ...(series ? { series } : {}),
         },
         [
-          `Stats: ${startDate} → ${endDate ?? 'today'}`,
-          `Total: ${total.requests} requests, ${total.delivered} delivered, ${total.bounces} bounces, ${total.opens} opens`,
-          ``,
-          ...rows,
+          `Stats (${selected}): ${startDate} → ${endDate ?? 'today'}`,
+          ...(note ? [note] : []),
+          `Total: ${totals.requests} requests, ${totals.delivered} delivered, ${totals.bounces} bounces, ${totals.opens} opens`,
+          '',
+          ...(lines.length > 0 ? lines : ['No stats for the given range.']),
         ].join('\n'),
         response_format,
+      );
+    },
+  );
+
+  server.registerTool(
+    'search_email_logs',
+    {
+      description:
+        'Search Email Logs (POST /v3/logs). Use when Email Activity is unavailable, especially for EU regional subusers. Query fields: sg_message_id =, subject =, to_email =, status IN, reason =, categories IN, sg_message_id_created_at comparisons. Combine with AND. No nesting. Parent accounts pass exactly one subuser.',
+      inputSchema: z.object({
+        query: z.string().min(1).optional(),
+        limit: z.number().int().min(1).max(1000).optional(),
+        subusers: z.array(z.string().min(1)).max(1).optional(),
+        ...ReadInputFields,
+      }),
+      outputSchema: EmailLogsOutputSchema,
+    },
+    async ({ query, limit, subusers, response_format }) => {
+      const result = await client.searchEmailLogs({ query, limit, subusers });
+      const messages = result.messages ?? [];
+      return jsonReadResult(
+        { count: messages.length, messages },
+        messages.length === 0
+          ? 'No Email Logs rows matched.'
+          : messages
+              .map(
+                (message) =>
+                  `- sg_message_id=${message.sg_message_id ?? 'n/a'} status=${message.status ?? 'n/a'} to=${message.to_email ?? 'n/a'} reason=${message.reason ?? 'n/a'}`,
+              )
+              .join('\n'),
+        response_format,
+      );
+    },
+  );
+
+  server.registerTool(
+    'delete_suppression',
+    {
+      description:
+        'Remove one recipient from a suppression list: bounce, block, spam_report, invalid_email, global unsubscribe, or one ASM group. Does not delete the group itself.',
+      inputSchema: z
+        .object({
+          confirmToken: ConfirmTokenSchema,
+          email: z.email(),
+          type: z.enum([
+            'bounce',
+            'block',
+            'spam_report',
+            'invalid_email',
+            'global',
+            'group',
+          ]),
+          groupId: z
+            .number()
+            .int()
+            .positive()
+            .optional()
+            .describe('Required when type is group'),
+        })
+        .superRefine((value, ctx) => {
+          if (value.type === 'group' && value.groupId === undefined) {
+            ctx.addIssue({
+              code: 'custom',
+              message: 'groupId is required when type is group',
+              path: ['groupId'],
+            });
+          }
+        }),
+      outputSchema: DeleteSuppressionOutputSchema,
+    },
+    async ({ email, type, groupId }) => {
+      await client.deleteSuppression({ type, email, groupId });
+      return jsonReadResult(
+        {
+          deleted: true,
+          type,
+          email,
+          groupId: groupId ?? null,
+        },
+        `Deleted ${type} suppression for ${email}${groupId !== undefined ? ` in group ${groupId}` : ''}.`,
       );
     },
   );

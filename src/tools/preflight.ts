@@ -547,6 +547,36 @@ export async function runSendPreflight(
             `Recipient ${recipient} has a spam-report suppression.`,
           );
         }
+        const suppressedGroups = (suppression.groupSuppressions ?? []).filter(
+          (group) => group.suppressed,
+        );
+        const requestedGroupId = request.asm?.groupId;
+        const matchedGroup = suppressedGroups.find(
+          (group) => group.id === requestedGroupId,
+        );
+        if (matchedGroup) {
+          pushIssue(
+            issues,
+            'blocker',
+            'RECIPIENT_GROUP_UNSUBSCRIBE',
+            `Recipient ${recipient} is unsubscribed from ASM group ${matchedGroup.id} (${matchedGroup.name}), which this send uses.`,
+          );
+        } else if (suppressedGroups.length > 0) {
+          pushIssue(
+            issues,
+            'warning',
+            'RECIPIENT_GROUP_UNSUBSCRIBE',
+            `Recipient ${recipient} is unsubscribed from ASM groups ${suppressedGroups.map((group) => `${group.id}:${group.name}`).join(', ')}. This send does not target those groups.`,
+          );
+        }
+        if (suppression.groupLookupError) {
+          pushIssue(
+            issues,
+            'warning',
+            'GROUP_SUPPRESSION_LOOKUP_FAILED',
+            `ASM group suppression lookup failed for ${recipient}: ${suppression.groupLookupError}`,
+          );
+        }
       }
     } catch (error) {
       pushIssue(

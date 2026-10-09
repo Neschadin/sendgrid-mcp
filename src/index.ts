@@ -26,6 +26,8 @@ function getEnv(): {
   apiBaseUrl: string;
   fromEmail: string;
   fromName: string;
+  onBehalfOf?: string;
+  preferEmailLogs: boolean;
 } {
   const env = Bun.env;
 
@@ -44,6 +46,8 @@ function getEnv(): {
         : 'https://api.sendgrid.com/v3'),
     fromEmail: env['SENDGRID_FROM_EMAIL']!,
     fromName: env['SENDGRID_FROM_NAME'] ?? 'SendGrid MCP',
+    onBehalfOf: env['SENDGRID_ON_BEHALF_OF'],
+    preferEmailLogs: env['SENDGRID_REGION'] === 'eu',
   };
 }
 
@@ -75,7 +79,10 @@ async function main() {
   } catch (error) {
     logWarn(`Webhook receiver not started: ${String(error)}`);
   }
-  const client = new SendGridClient(env.apiKey, env.apiBaseUrl);
+  const client = new SendGridClient(env.apiKey, env.apiBaseUrl, {
+    onBehalfOf: env.onBehalfOf,
+    preferEmailLogs: env.preferEmailLogs,
+  });
 
   // serveStdio owns onclose. Wrap close so the webhook listener (a keep-alive
   // handle) is released when stdin ends or the process is signalled.

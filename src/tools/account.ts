@@ -11,6 +11,7 @@ import {
   jsonText,
   paginateArray,
   SendGridAlertSchema,
+  ScopesOutputSchema,
   UserAccountOutputSchema,
   UserCreditsOutputSchema,
   UserProfileOutputSchema,
@@ -67,6 +68,29 @@ export function registerAccountTools(server: McpServer, client: SendGridClient) 
     async ({ response_format }) => {
       const data = await client.getUserCredits();
       return jsonReadResult(data, undefined, response_format);
+    },
+  );
+
+  server.registerTool(
+    'get_scopes',
+    {
+      description:
+        'List OAuth scopes granted to the current SendGrid API key (GET /v3/scopes). Use this after a 403 to see what the key can actually call.',
+      inputSchema: z.object({ ...ReadInputFields }),
+      outputSchema: ScopesOutputSchema,
+    },
+    async ({ response_format }) => {
+      const data = await client.getScopes();
+      const scopes = data.scopes ?? [];
+      return jsonReadResult(
+        { count: scopes.length, scopes },
+        scopes.length === 0
+          ? 'This API key has no scopes.'
+          : [`Scopes (${scopes.length}):`, ...scopes.map((scope) => `- ${scope}`)].join(
+              '\n',
+            ),
+        response_format,
+      );
     },
   );
 

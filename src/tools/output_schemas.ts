@@ -301,6 +301,8 @@ export const MessageActivitySchema = z
 
 export const SearchMessageActivityOutputSchema = PaginationMetaSchema.extend({
   messages: z.array(MessageActivitySchema),
+  source: z.enum(['activity', 'logs']).optional(),
+  note: z.string().optional(),
 });
 
 export const EventWebhookSchema = z
@@ -363,13 +365,63 @@ export const ListSuppressionsOutputSchema = PaginationMetaSchema.extend({
   entries: z.array(SuppressionEntrySchema),
 });
 
+export const StatsDimensionSchema = z.enum([
+  'global',
+  'category',
+  'category_sums',
+  'mailbox_provider',
+  'geo',
+  'browser',
+  'device',
+  'client',
+]);
+
 export const EmailStatsOutputSchema = z.object({
   startDate: z.string(),
   endDate: z.string().nullable(),
+  dimension: StatsDimensionSchema.optional(),
+  aggregatedBy: z.enum(['day', 'week', 'month']).optional(),
+  note: z.string().optional(),
   totals: z.object({
     requests: z.number(),
     delivered: z.number(),
     bounces: z.number(),
     opens: z.number(),
   }),
+  series: z.array(PassthroughRecordSchema).optional(),
+});
+
+export const EmailLogsOutputSchema = z.object({
+  count: z.number().int().nonnegative(),
+  messages: z.array(
+    z
+      .object({
+        sg_message_id: z.string().optional(),
+        from_email: z.string().optional(),
+        to_email: z.string().optional(),
+        subject: z.string().optional(),
+        status: z.string().optional(),
+        reason: z.string().optional(),
+        sg_message_id_created_at: z.string().optional(),
+      })
+      .passthrough(),
+  ),
+});
+
+export const ScopesOutputSchema = z.object({
+  count: z.number().int().nonnegative(),
+  scopes: z.array(z.string()),
+});
+
+export const DeleteSuppressionOutputSchema = z.object({
+  deleted: z.boolean(),
+  type: z.string(),
+  email: z.string(),
+  groupId: z.number().int().nullable(),
+});
+
+export const AsmGroupSuppressionSchema = z.object({
+  id: z.number().int(),
+  name: z.string(),
+  suppressed: z.boolean(),
 });
