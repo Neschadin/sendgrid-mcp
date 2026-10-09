@@ -6,6 +6,12 @@ import {
   isReadOnlyMode,
 } from '../src/tools/tool_utils';
 import { SendGridApiError } from '../src/client';
+import { loadConfig } from '../src/config';
+import { redactSensitiveFields, redactSecretsInText } from '../src/redact';
+import {
+  currentToolAbortSignal,
+  runWithToolAbortSignal,
+} from '../src/tool_signal';
 import {
   activityQueryForXMessageId,
   compileActivitySearch,
@@ -137,6 +143,53 @@ describe('activity query', () => {
     expect(() => rejectActivityOffset(0)).not.toThrow();
     expect(() => rejectActivityOffset(undefined)).not.toThrow();
     expect(() => rejectActivityOffset(25)).toThrow(/no offset/);
+  });
+});
+
+describe('config', () => {
+  test('treats SENDGRID_REGION=EU as the EU host', () => {
+    const config = loadConfig({
+      SENDGRID_API_KEY: 'SG.test',
+      SENDGRID_FROM_EMAIL: 'ops@example.com',
+      SENDGRID_REGION: 'EU',
+    });
+    expect(config.region).toBe('eu');
+    expect(config.apiBaseUrl).toBe('https://api.eu.sendgrid.com/v3');
+    expect(config.preferEmailLogs).toBe(true);
+  });
+
+  test('rejects a from address that is not an email', () => {
+    expect(() =>
+      loadConfig({
+        SENDGRID_API_KEY: 'SG.test',
+        SENDGRID_FROM_EMAIL: 'not-an-email',
+      }),
+    ).toThrow(/fromEmail|email/i);
+  });
+});
+
+describe('redact', () => {
+  test('hides oauth client secrets in objects and JSON text', () => {
+    expect(
+      redactSensitiveFields({ oauth_client_secret: 'supersecret', url: 'https://example.com' }),
+    ).toEqual({
+      oauth_client_secret: '<redacted len=11>',
+      url: 'https://example.com',
+    });
+    const text = redactSecretsInText(
+      JSON.stringify({ oauth_client_secret: 'supersecret' }),
+    );
+    expect(text).toContain('<redacted len=11>');
+    expect(text).not.toContain('supersecret');
+  });
+});
+
+describe('tool abort signal', () => {
+  test('is visible to SendGrid fetches started inside the tool call', async () => {
+    const signal = AbortSignal.abort();
+    await runWithToolAbortSignal(signal, async () => {
+      expect(currentToolAbortSignal()?.aborted).toBe(true);
+    });
   });
 });
 

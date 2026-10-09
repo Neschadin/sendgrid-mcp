@@ -1,6 +1,11 @@
 import type { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { isSendGridApiError } from '../client';
+import { redactToolResult } from '../redact';
+import {
+  abortSignalFromExtra,
+  runWithToolAbortSignal,
+} from '../tool_signal';
 
 export const TOOL_NAME_PREFIX = 'sendgrid_';
 export const CONFIRM_TOKEN_SUFFIX = ' Requires confirmToken="CONFIRM".';
@@ -115,6 +120,9 @@ export function formatToolError(error: unknown): string {
     return `SendGrid API error (${error.status}) on ${error.method} ${error.path}.${details}${hintText}`;
   }
 
+  if (error instanceof Error && error.name === 'AbortError') {
+    return 'SendGrid request cancelled because the MCP client aborted the tool call.';
+  }
   if (error instanceof Error) return error.message;
   return String(error);
 }
@@ -268,28 +276,34 @@ export function ensureSafeToolRegistration(server: McpServer) {
           })()
         : config,
       async (args: unknown, extra: unknown) => {
-        try {
-          if (
-            typeof exposedName === 'string' &&
-            isReadOnlyBlocked(exposedName)
-          ) {
+        const signal = abortSignalFromExtra(extra);
+        const run = async () => {
+          try {
+            if (
+              typeof exposedName === 'string' &&
+              isReadOnlyBlocked(exposedName)
+            ) {
+              return {
+                isError: true,
+                content: [
+                  {
+                    type: 'text',
+                    text: `Blocked by READ_ONLY=true. ${exposedName} can send mail or change SendGrid. Set READ_ONLY=false to run it.`,
+                  },
+                ],
+              };
+            }
+            return await handler(args, extra);
+          } catch (error) {
             return {
               isError: true,
-              content: [
-                {
-                  type: 'text',
-                  text: `Blocked by READ_ONLY=true. ${exposedName} can send mail or change SendGrid. Set READ_ONLY=false to run it.`,
-                },
-              ],
+              content: [{ type: 'text', text: formatToolError(error) }],
             };
           }
-          return await handler(args, extra);
-        } catch (error) {
-          return {
-            isError: true,
-            content: [{ type: 'text', text: formatToolError(error) }],
-          };
-        }
+        };
+
+        const result = await runWithToolAbortSignal(signal, run);
+        return redactToolResult(result);
       },
     );
   }) as typeof server.registerTool;

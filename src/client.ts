@@ -1,3 +1,5 @@
+import { currentToolAbortSignal } from './tool_signal';
+
 const DEFAULT_SENDGRID_BASE = 'https://api.sendgrid.com/v3';
 const MAX_RATE_LIMIT_RETRIES = 3;
 const DEFAULT_RETRY_DELAY_MS = 1000;
@@ -620,6 +622,10 @@ export class SendGridClient {
     const url = this.buildUrl(path, params);
 
     for (let attempt = 0; attempt <= MAX_RATE_LIMIT_RETRIES; attempt++) {
+      const signal = currentToolAbortSignal();
+      if (signal?.aborted) {
+        throw new DOMException('The MCP client aborted the tool call.', 'AbortError');
+      }
       const res = await fetch(url.toString(), {
         method,
         headers: {
@@ -628,6 +634,7 @@ export class SendGridClient {
           ...(this.onBehalfOf ? { 'on-behalf-of': this.onBehalfOf } : {}),
         },
         body: body !== undefined ? JSON.stringify(body) : undefined,
+        signal,
       });
 
       if (res.ok) return res;

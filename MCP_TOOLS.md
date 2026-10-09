@@ -3,7 +3,7 @@
 Scope: transactional email hardening and SendGrid-side diagnostics.  
 Out of scope: contact/list marketing CRUD.
 
-**Handshake metadata (v2):** Server name is `sendgrid-mcp-server`. All tools are exposed as `sendgrid_<name>`. Mutating tools with required `confirmToken` automatically append `Requires confirmToken="CONFIRM".` to the tool `description`. Read tools expose `outputSchema`, `structuredContent`, optional `response_format` (`markdown`|`json`), and list pagination metadata (`total_count`, `count`, `offset`, `has_more`, `next_offset`).
+**Handshake metadata (v2):** Server name is `sendgrid-mcp-server`. The handshake `instructions` carry the safe-send and delivery workflow for this process (region, API base, from address). All tools are exposed as `sendgrid_<name>`. Mutating tools with required `confirmToken` automatically append `Requires confirmToken="CONFIRM".` to the tool `description`. Read tools expose `outputSchema`, `structuredContent`, optional `response_format` (`markdown`|`json`), and list pagination metadata (`total_count`, `count`, `offset`, `has_more`, `next_offset`). A tool call whose arguments contain more than 10000 combined array elements and object members is rejected before the handler runs. Tool results redact `oauth_client_secret` and `api_key`.
 
 ## Core Runbooks
 

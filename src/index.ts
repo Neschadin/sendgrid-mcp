@@ -5,8 +5,13 @@ import {
   StdioServerTransport,
 } from '@modelcontextprotocol/server/stdio';
 import { version } from '../package.json';
-import { logError, logInfo, logWarn } from './logger';
 import { SendGridClient } from './client';
+import {
+  buildServerInstructions,
+  loadConfig,
+  MAX_TOOL_INPUT_ELEMENTS,
+} from './config';
+import { logError, logInfo, logWarn } from './logger';
 import { registerDiagnosticsTools } from './tools/diagnostics';
 import { registerEmailTools } from './tools/email';
 import { registerPreflightTools } from './tools/preflight';
@@ -19,47 +24,22 @@ import {
   stopWebhookReceiver,
 } from './webhook_receiver';
 
-const REQUIRED_ENV = ['SENDGRID_API_KEY', 'SENDGRID_FROM_EMAIL'] as const;
-
-function getEnv(): {
-  apiKey: string;
-  apiBaseUrl: string;
-  fromEmail: string;
-  fromName: string;
-  onBehalfOf?: string;
-  preferEmailLogs: boolean;
-} {
-  const env = Bun.env;
-
-  for (const key of REQUIRED_ENV) {
-    if (!env[key]) {
-      logError(`Missing required env var: ${key}`);
-      process.exit(1);
-    }
-  }
-  return {
-    apiKey: env['SENDGRID_API_KEY']!,
-    apiBaseUrl:
-      env['SENDGRID_API_BASE_URL'] ??
-      (env['SENDGRID_REGION'] === 'eu'
-        ? 'https://api.eu.sendgrid.com/v3'
-        : 'https://api.sendgrid.com/v3'),
-    fromEmail: env['SENDGRID_FROM_EMAIL']!,
-    fromName: env['SENDGRID_FROM_NAME'] ?? 'SendGrid MCP',
-    onBehalfOf: env['SENDGRID_ON_BEHALF_OF'],
-    preferEmailLogs: env['SENDGRID_REGION'] === 'eu',
-  };
-}
-
 function buildServer(
   client: SendGridClient,
   fromEmail: string,
   fromName: string,
+  instructions: string,
 ): McpServer {
-  const server = new McpServer({
-    name: 'sendgrid-mcp-server',
-    version,
-  });
+  const server = new McpServer(
+    {
+      name: 'sendgrid-mcp-server',
+      version,
+    },
+    {
+      instructions,
+      maxToolInputElements: MAX_TOOL_INPUT_ELEMENTS,
+    },
+  );
 
   registerTemplateTools(server, client);
   registerEmailTools(server, client, fromEmail, fromName);
@@ -73,7 +53,10 @@ function buildServer(
 }
 
 async function main() {
-  const env = getEnv();
+  const env = loadConfig();
+  if (!env.apiKey.startsWith('SG.')) {
+    logWarn('SENDGRID_API_KEY does not start with SG.');
+  }
   try {
     startWebhookReceiverFromEnv();
   } catch (error) {
@@ -97,8 +80,9 @@ async function main() {
     }
   };
 
+  const instructions = buildServerInstructions(env);
   const handle = serveStdio(
-    () => buildServer(client, env.fromEmail, env.fromName),
+    () => buildServer(client, env.fromEmail, env.fromName, instructions),
     {
       transport,
       onerror: (error) => {

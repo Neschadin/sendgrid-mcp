@@ -26,13 +26,13 @@ Full tool catalog: [`MCP_TOOLS.md`](./MCP_TOOLS.md)
 
 Download the binary for your OS from [GitHub Releases](https://github.com/Neschadin/sendgrid-mcp/releases).
 
-| Platform | Asset |
-|----------|--------|
-| Linux x64 | `sendgrid-linux-x64` |
-| Linux arm64 | `sendgrid-linux-arm64` |
-| macOS Intel | `sendgrid-darwin-x64` |
-| macOS Apple Silicon | `sendgrid-darwin-arm64` |
-| Windows x64 | `sendgrid-windows-x64.exe` |
+| Platform            | Asset                      |
+| ------------------- | -------------------------- |
+| Linux x64           | `sendgrid-linux-x64`       |
+| Linux arm64         | `sendgrid-linux-arm64`     |
+| macOS Intel         | `sendgrid-darwin-x64`      |
+| macOS Apple Silicon | `sendgrid-darwin-arm64`    |
+| Windows x64         | `sendgrid-windows-x64.exe` |
 
 ```bash
 chmod +x sendgrid-linux-x64
@@ -53,36 +53,38 @@ Each user runs the server locally with **their own** API key (bring-your-own-key
 
 ### Required environment variables
 
-| Variable | Description |
-|----------|-------------|
-| `SENDGRID_API_KEY` | SendGrid API key (`SG....`) |
+| Variable              | Description                            |
+| --------------------- | -------------------------------------- |
+| `SENDGRID_API_KEY`    | SendGrid API key (`SG....`)            |
 | `SENDGRID_FROM_EMAIL` | Default From address (verified sender) |
 
 ### Optional
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SENDGRID_FROM_NAME` | `SendGrid MCP` | Default From display name |
-| `SENDGRID_REGION` | `global` | Use `eu` for `https://api.eu.sendgrid.com/v3`. Also makes an empty Email Activity search fall back to Email Logs |
-| `SENDGRID_API_BASE_URL` | `https://api.sendgrid.com/v3` | Full SendGrid API base URL override |
-| `SENDGRID_ON_BEHALF_OF` | — | `on-behalf-of` header value: a subuser username, or `account-id <id>` for a customer account |
-| `READ_ONLY` | `false` | When `true`, tools that send mail or change SendGrid return an error before any request |
-| `SENDGRID_MCP_LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` |
+| Variable                 | Default                       | Description                                                                                                      |
+| ------------------------ | ----------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `SENDGRID_FROM_NAME`     | `SendGrid MCP`                | Default From display name                                                                                        |
+| `SENDGRID_REGION`        | `global`                      | Use `eu` for `https://api.eu.sendgrid.com/v3`. Also makes an empty Email Activity search fall back to Email Logs |
+| `SENDGRID_API_BASE_URL`  | `https://api.sendgrid.com/v3` | Full SendGrid API base URL override                                                                              |
+| `SENDGRID_ON_BEHALF_OF`  | —                             | `on-behalf-of` header value: a subuser username, or `account-id <id>` for a customer account                     |
+| `READ_ONLY`              | `false`                       | When `true`, tools that send mail or change SendGrid return an error before any request                          |
+| `SENDGRID_MCP_LOG_LEVEL` | `info`                        | `debug` \| `info` \| `warn` \| `error`                                                                           |
+
+`SENDGRID_REGION` is case-insensitive (`eu` and `EU` both select the EU API). The MCP handshake `instructions` repeat the region, API base, from address, and the safe-send / delivery workflow. Tool arguments larger than 10000 combined array elements and object members are rejected. Responses replace `oauth_client_secret` and `api_key` values with a length marker.
 
 ### Optional: local Event Webhook receiver
 
 Enabled only when `SENDGRID_EVENT_WEBHOOK_PORT` is set.
 
-| Variable | Default |
-|----------|---------|
-| `SENDGRID_EVENT_WEBHOOK_PORT` | *(disabled)* |
-| `SENDGRID_EVENT_WEBHOOK_HOST` | `0.0.0.0` |
-| `SENDGRID_EVENT_WEBHOOK_PATH` | `/sendgrid/events` |
-| `SENDGRID_EVENT_WEBHOOK_HEALTH_PATH` | `/sendgrid/events/health` |
-| `SENDGRID_EVENT_WEBHOOK_MAX_EVENTS` | `5000` |
-| `SENDGRID_EVENT_WEBHOOK_VERBOSE` | `false` |
-| `SENDGRID_EVENT_WEBHOOK_REQUIRE_SIGNATURE` | `false` |
-| `SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY` | — (required if signature enforced) |
+| Variable                                   | Default                            |
+| ------------------------------------------ | ---------------------------------- |
+| `SENDGRID_EVENT_WEBHOOK_PORT`              | _(disabled)_                       |
+| `SENDGRID_EVENT_WEBHOOK_HOST`              | `0.0.0.0`                          |
+| `SENDGRID_EVENT_WEBHOOK_PATH`              | `/sendgrid/events`                 |
+| `SENDGRID_EVENT_WEBHOOK_HEALTH_PATH`       | `/sendgrid/events/health`          |
+| `SENDGRID_EVENT_WEBHOOK_MAX_EVENTS`        | `5000`                             |
+| `SENDGRID_EVENT_WEBHOOK_VERBOSE`           | `false`                            |
+| `SENDGRID_EVENT_WEBHOOK_REQUIRE_SIGNATURE` | `false`                            |
+| `SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY`        | — (required if signature enforced) |
 
 Point SendGrid Event Webhook URL to your tunnel, e.g. `https://<ngrok-host>/sendgrid/events`. Inspect events via MCP tools `get_received_webhook_events` / `get_webhook_receiver_status`.
 
