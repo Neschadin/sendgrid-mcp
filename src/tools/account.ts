@@ -12,6 +12,7 @@ import {
   paginateArray,
   SendGridAlertSchema,
   ScopesOutputSchema,
+  SubuserListOutputSchema,
   UserAccountOutputSchema,
   UserCreditsOutputSchema,
   UserProfileOutputSchema,
@@ -89,6 +90,57 @@ export function registerAccountTools(server: McpServer, client: SendGridClient) 
           : [`Scopes (${scopes.length}):`, ...scopes.map((scope) => `- ${scope}`)].join(
               '\n',
             ),
+        response_format,
+      );
+    },
+  );
+
+  server.registerTool(
+    'list_subusers',
+    {
+      description:
+        'List SendGrid subusers for the parent API key (GET /v3/subusers). Use a returned username as onBehalfOf on later calls, or as SENDGRID_ON_BEHALF_OF. Pass onBehalfOf="parent" when that env var is already set and this list must run as the parent.',
+      inputSchema: z.object({
+        username: z
+          .string()
+          .min(1)
+          .optional()
+          .describe('Filter to one subuser username'),
+        region: z.enum(['all', 'global', 'eu']).optional(),
+        includeRegion: z
+          .boolean()
+          .optional()
+          .describe('Include each subuser region. Default true.'),
+        ...ListPagingInputFields,
+      }),
+      outputSchema: SubuserListOutputSchema,
+    },
+    async ({ username, region, includeRegion, limit, offset, response_format }) => {
+      const pageLimit = limit ?? 50;
+      const pageOffset = offset ?? 0;
+      const subusers = await client.listSubusers({
+        username,
+        region,
+        includeRegion: includeRegion ?? true,
+        limit: pageLimit,
+        offset: pageOffset,
+      });
+      return jsonReadResult(
+        {
+          count: subusers.length,
+          limit: pageLimit,
+          offset: pageOffset,
+          has_more: subusers.length >= pageLimit,
+          subusers,
+        },
+        subusers.length === 0
+          ? 'No subusers matched.'
+          : subusers
+              .map(
+                (subuser) =>
+                  `- ${subuser.username} id=${subuser.id ?? 'n/a'} disabled=${String(subuser.disabled ?? false)} region=${subuser.region ?? 'n/a'} email=${subuser.email ?? 'n/a'}`,
+              )
+              .join('\n'),
         response_format,
       );
     },

@@ -1,4 +1,8 @@
-import { currentToolAbortSignal } from './tool_signal';
+import {
+  currentOnBehalfOf,
+  currentToolAbortSignal,
+  resolveOnBehalfOfHeader,
+} from './tool_signal';
 
 const DEFAULT_SENDGRID_BASE = 'https://api.sendgrid.com/v3';
 const MAX_RATE_LIMIT_RETRIES = 3;
@@ -437,6 +441,15 @@ export interface UserProfile {
   [key: string]: unknown;
 }
 
+export interface SendGridSubuser {
+  id?: number;
+  username: string;
+  email?: string;
+  disabled?: boolean;
+  region?: string;
+  [key: string]: unknown;
+}
+
 export interface UserCredits {
   remain?: number;
   total?: number;
@@ -626,12 +639,16 @@ export class SendGridClient {
       if (signal?.aborted) {
         throw new DOMException('The MCP client aborted the tool call.', 'AbortError');
       }
+      const onBehalfOf = resolveOnBehalfOfHeader(
+        currentOnBehalfOf(),
+        this.onBehalfOf,
+      );
       const res = await fetch(url.toString(), {
         method,
         headers: {
           Authorization: `Bearer ${this.apiKey}`,
           'Content-Type': 'application/json',
-          ...(this.onBehalfOf ? { 'on-behalf-of': this.onBehalfOf } : {}),
+          ...(onBehalfOf ? { 'on-behalf-of': onBehalfOf } : {}),
         },
         body: body !== undefined ? JSON.stringify(body) : undefined,
         signal,
@@ -989,6 +1006,34 @@ export class SendGridClient {
     );
   }
 
+  createEventWebhook(
+    payload: UpdateEventWebhookPayload & { url: string },
+  ): Promise<EventWebhookSettings> {
+    return this.request<EventWebhookSettings>(
+      'POST',
+      '/user/webhooks/event/settings',
+      payload,
+    );
+  }
+
+  deleteEventWebhook(id: string): Promise<void> {
+    return this.request<void>(
+      'DELETE',
+      `/user/webhooks/event/settings/${encodeURIComponent(id)}`,
+    );
+  }
+
+  testEventWebhook(payload: {
+    url: string;
+    id?: string;
+  }): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>(
+      'POST',
+      '/user/webhooks/event/test',
+      payload,
+    );
+  }
+
   getPartnerAccountState(accountId: string): Promise<{ state: string }> {
     return this.request<{ state: string }>(
       'GET',
@@ -1137,6 +1182,23 @@ export class SendGridClient {
 
   getScopes(): Promise<{ scopes: string[] }> {
     return this.request<{ scopes: string[] }>('GET', '/scopes');
+  }
+
+  async listSubusers(params?: {
+    username?: string;
+    limit?: number;
+    offset?: number;
+    region?: 'all' | 'global' | 'eu';
+    includeRegion?: boolean;
+  }): Promise<SendGridSubuser[]> {
+    const payload = await this.request<unknown>('GET', '/subusers', undefined, {
+      username: params?.username,
+      limit: params?.limit,
+      offset: params?.offset,
+      region: params?.region,
+      include_region: params?.includeRegion,
+    });
+    return coerceArray<SendGridSubuser>(payload);
   }
 
   getStats(startDate: string, endDate?: string): Promise<GlobalStats[]>;

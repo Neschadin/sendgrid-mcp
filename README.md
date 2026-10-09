@@ -68,6 +68,16 @@ Each user runs the server locally with **their own** API key (bring-your-own-key
 | `SENDGRID_ON_BEHALF_OF`  | —                             | `on-behalf-of` header value: a subuser username, or `account-id <id>` for a customer account                     |
 | `READ_ONLY`              | `false`                       | When `true`, tools that send mail or change SendGrid return an error before any request                          |
 | `SENDGRID_MCP_LOG_LEVEL` | `info`                        | `debug` \| `info` \| `warn` \| `error`                                                                           |
+| `MCP_TRANSPORT`          | `stdio`                       | `http` serves Streamable HTTP at `/mcp`                                                                          |
+| `MCP_HTTP_HOST`          | `127.0.0.1`                   | Bind address. Non-loopback requires auth, an allowlist, and TLS or `MCP_TRUST_PROXY=true`                        |
+| `MCP_HTTP_PORT`          | `3000`                        | HTTP port                                                                                                        |
+| `MCP_AUTH_MODE`          | `token`                       | `token` or `none`. `none` is refused off loopback                                                                |
+| `MCP_AUTH_TOKEN`         | —                             | Bearer token required for `MCP_AUTH_MODE=token`                                                                  |
+| `MCP_ALLOWED_HOSTS`      | loopback names                | Comma-separated Host allowlist. Required off loopback                                                            |
+| `MCP_ALLOWED_ORIGINS`    | loopback origins              | Comma-separated Origin allowlist. Missing Origin is allowed                                                      |
+| `MCP_TLS_KEY_FILE`       | —                             | TLS private key. Set with `MCP_TLS_CERT_FILE`                                                                    |
+| `MCP_TLS_CERT_FILE`      | —                             | TLS certificate                                                                                                  |
+| `MCP_TRUST_PROXY`        | `false`                       | Plain HTTP off loopback is allowed only behind your own TLS proxy                                                |
 
 `SENDGRID_REGION` is case-insensitive (`eu` and `EU` both select the EU API). The MCP handshake `instructions` repeat the region, API base, from address, and the safe-send / delivery workflow. Tool arguments larger than 10000 combined array elements and object members are rejected. Responses replace `oauth_client_secret` and `api_key` values with a length marker.
 
@@ -108,6 +118,21 @@ Settings → MCP → add server (or edit `~/.cursor/mcp.json`):
         "SENDGRID_API_KEY": "SG.xxx",
         "SENDGRID_FROM_EMAIL": "you@yourdomain.com",
         "SENDGRID_FROM_NAME": "Your App"
+      }
+    }
+  }
+}
+```
+
+Remote Streamable HTTP (`MCP_TRANSPORT=http` on the server). Non-loopback needs `MCP_AUTH_TOKEN`, `MCP_ALLOWED_HOSTS`, and TLS or `MCP_TRUST_PROXY=true`.
+
+```json
+{
+  "mcpServers": {
+    "sendgrid": {
+      "url": "https://mcp.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer <MCP_AUTH_TOKEN>"
       }
     }
   }

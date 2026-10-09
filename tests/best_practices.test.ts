@@ -10,6 +10,7 @@ import { loadConfig } from '../src/config';
 import { redactSensitiveFields, redactSecretsInText } from '../src/redact';
 import {
   currentToolAbortSignal,
+  resolveOnBehalfOfHeader,
   runWithToolAbortSignal,
 } from '../src/tool_signal';
 import {
@@ -190,6 +191,39 @@ describe('tool abort signal', () => {
     await runWithToolAbortSignal(signal, async () => {
       expect(currentToolAbortSignal()?.aborted).toBe(true);
     });
+  });
+});
+
+describe('on-behalf-of', () => {
+  test('parent clears the configured subuser header', () => {
+    expect(resolveOnBehalfOfHeader('parent', 'news')).toBeUndefined();
+    expect(resolveOnBehalfOfHeader('billing', 'news')).toBe('billing');
+    expect(resolveOnBehalfOfHeader(undefined, 'news')).toBe('news');
+  });
+});
+
+describe('http config', () => {
+  test('rejects public HTTP without a bearer token', () => {
+    expect(() =>
+      loadConfig({
+        SENDGRID_API_KEY: 'SG.test',
+        SENDGRID_FROM_EMAIL: 'ops@example.com',
+        MCP_TRANSPORT: 'http',
+        MCP_HTTP_HOST: '0.0.0.0',
+      }),
+    ).toThrow(/MCP_AUTH_TOKEN/);
+  });
+
+  test('allows loopback HTTP with MCP_AUTH_MODE=none', () => {
+    const config = loadConfig({
+      SENDGRID_API_KEY: 'SG.test',
+      SENDGRID_FROM_EMAIL: 'ops@example.com',
+      MCP_TRANSPORT: 'http',
+      MCP_AUTH_MODE: 'none',
+    });
+    expect(config.transport).toBe('http');
+    expect(config.http?.authMode).toBe('none');
+    expect(config.http?.host).toBe('127.0.0.1');
   });
 });
 

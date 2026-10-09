@@ -4,8 +4,18 @@ import { isSendGridApiError } from '../client';
 import { redactToolResult } from '../redact';
 import {
   abortSignalFromExtra,
+  onBehalfOfFromArgs,
+  runWithOnBehalfOf,
   runWithToolAbortSignal,
 } from '../tool_signal';
+
+export const OnBehalfOfSchema = z
+  .string()
+  .min(1)
+  .optional()
+  .describe(
+    'Subuser username, "account-id <id>", or "parent" to ignore SENDGRID_ON_BEHALF_OF for this call. Added to every tool.',
+  );
 
 export const TOOL_NAME_PREFIX = 'sendgrid_';
 export const CONFIRM_TOKEN_SUFFIX = ' Requires confirmToken="CONFIRM".';
@@ -197,11 +207,18 @@ function inferAnnotations(
     'schedule_',
     'send_',
     'toggle_',
+    'manage_',
     'update_',
     'validate_authenticated_',
     'validate_branded_',
   ];
-  const destructivePrefixes = ['cancel_', 'clear_', 'delete_', 'prune_'];
+  const destructivePrefixes = [
+    'cancel_',
+    'clear_',
+    'delete_',
+    'manage_',
+    'prune_',
+  ];
   const readOnlyPrefixes = [
     'analyze_',
     'check_',
@@ -259,6 +276,15 @@ export function ensureSafeToolRegistration(server: McpServer) {
       typeof name === 'string' && typeof config === 'object' && config !== null
         ? (() => {
             const cfg = config as Record<string, unknown>;
+            const inputSchema = cfg['inputSchema'];
+            if (
+              inputSchema instanceof z.ZodObject &&
+              !('onBehalfOf' in inputSchema.shape)
+            ) {
+              cfg['inputSchema'] = inputSchema.extend({
+                onBehalfOf: OnBehalfOfSchema,
+              });
+            }
             const requiresConfirm = inputSchemaRequiresConfirm(
               cfg['inputSchema'],
             );
@@ -277,6 +303,7 @@ export function ensureSafeToolRegistration(server: McpServer) {
         : config,
       async (args: unknown, extra: unknown) => {
         const signal = abortSignalFromExtra(extra);
+        const onBehalfOf = onBehalfOfFromArgs(args);
         const run = async () => {
           try {
             if (
@@ -302,7 +329,9 @@ export function ensureSafeToolRegistration(server: McpServer) {
           }
         };
 
-        const result = await runWithToolAbortSignal(signal, run);
+        const result = await runWithOnBehalfOf(onBehalfOf, () =>
+          runWithToolAbortSignal(signal, run),
+        );
         return redactToolResult(result);
       },
     );

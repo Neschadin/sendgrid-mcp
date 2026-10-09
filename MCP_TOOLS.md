@@ -215,6 +215,12 @@ Out of scope: contact/list marketing CRUD.
 - **Typical flow:** Trend and blast-radius checks. Use `category` for categories sent on the mail payload, `mailbox_provider` for provider-specific drops.
 - **Caveats:** Aggregated metrics, not per-message forensics. Browser, device, and client stats retain about 7 days.
 
+### `sendgrid_list_subusers`
+- **Purpose:** List subusers on the parent account (`GET /v3/subusers`), including region when `includeRegion` is true (the default).
+- **Inputs:** optional `username`, `region` (`all` | `global` | `eu`), `limit`, `offset`, `includeRegion`.
+- **Typical flow:** Pick `username`, then pass it as `onBehalfOf` on later tools. `onBehalfOf` is optional on every tool. `onBehalfOf="parent"` ignores `SENDGRID_ON_BEHALF_OF` for that call.
+- **Caveats:** The parent API key must be allowed to list subusers. A key already scoped with `SENDGRID_ON_BEHALF_OF` is not the parent; pass `onBehalfOf="parent"` for this list.
+
 ### `sendgrid_get_scopes`
 - **Purpose:** List scopes on the current API key (`GET /v3/scopes`).
 - **Inputs:** none.
@@ -238,6 +244,12 @@ Out of scope: contact/list marketing CRUD.
 - **Inputs:** `id` + selected fields.
 - **Typical flow:** Enable missing events / switch endpoint URL.
 - **Caveats:** Signature mode is managed separately.
+
+### `sendgrid_manage_event_webhook`
+- **Purpose:** Create, delete, or test an Event Webhook (`POST /user/webhooks/event/settings`, `DELETE /user/webhooks/event/settings/{id}`, `POST /user/webhooks/event/test`).
+- **Inputs:** `confirmToken="CONFIRM"`, `action` (`create` | `delete` | `test`), `url` for create, `id` for delete. Test uses `url`, or the saved webhook URL when only `id` is set. Optional event toggles match `update_event_webhook`.
+- **Typical flow:** Point `url` at the local receiver, create, then test.
+- **Caveats:** `oauth_client_secret` is redacted in the tool result. Delete does not remove the local receiver.
 
 ### `sendgrid_toggle_event_webhook_signature`
 - **Purpose:** Enable/disable signed Event Webhook mode.
@@ -367,6 +379,7 @@ Tool risk classification:
 - `sendgrid_get_event_webhook`: `read-only`
 - `sendgrid_update_event_webhook`: `mutates-sendgrid`
 - `sendgrid_toggle_event_webhook_signature`: `mutates-sendgrid`
+- `sendgrid_manage_event_webhook`: `mutates-sendgrid`
 - `sendgrid_get_webhook_receiver_status`: `read-only`
 - `sendgrid_get_received_webhook_events`: `read-only`
 - `sendgrid_clear_received_webhook_events`: `mutates-local`
@@ -378,6 +391,7 @@ Tool risk classification:
 - `sendgrid_delete_suppression`: `mutates-sendgrid`
 - `sendgrid_get_email_stats`: `read-only`
 - `sendgrid_get_scopes`: `read-only`
+- `sendgrid_list_subusers`: `read-only`
 - `sendgrid_get_account_info`: `read-only`
 - `sendgrid_get_user_profile`: `read-only`
 - `sendgrid_get_user_credits`: `read-only`

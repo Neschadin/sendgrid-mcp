@@ -11,6 +11,7 @@ import {
   loadConfig,
   MAX_TOOL_INPUT_ELEMENTS,
 } from './config';
+import { startHttpServer } from './http';
 import { logError, logInfo, logWarn } from './logger';
 import { registerDiagnosticsTools } from './tools/diagnostics';
 import { registerEmailTools } from './tools/email';
@@ -66,6 +67,33 @@ async function main() {
     onBehalfOf: env.onBehalfOf,
     preferEmailLogs: env.preferEmailLogs,
   });
+  const instructions = buildServerInstructions(env);
+  const factory = () =>
+    buildServer(client, env.fromEmail, env.fromName, instructions);
+
+  if (env.transport === 'http' && env.http) {
+    const endpoint = startHttpServer({ factory, http: env.http });
+    let shuttingDown = false;
+    const shutdown = async (signal: string) => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      logInfo(`Shutdown requested (${signal})`);
+      try {
+        await endpoint.stop();
+      } finally {
+        stopWebhookReceiver();
+        process.exit(0);
+      }
+    };
+    process.on('SIGINT', () => {
+      void shutdown('SIGINT');
+    });
+    process.on('SIGTERM', () => {
+      void shutdown('SIGTERM');
+    });
+    logInfo('Server started');
+    return;
+  }
 
   // serveStdio owns onclose. Wrap close so the webhook listener (a keep-alive
   // handle) is released when stdin ends or the process is signalled.
@@ -80,9 +108,7 @@ async function main() {
     }
   };
 
-  const instructions = buildServerInstructions(env);
-  const handle = serveStdio(
-    () => buildServer(client, env.fromEmail, env.fromName, instructions),
+  const handle = serveStdio(factory,
     {
       transport,
       onerror: (error) => {

@@ -413,6 +413,31 @@ export const ScopesOutputSchema = z.object({
   scopes: z.array(z.string()),
 });
 
+export const ManageEventWebhookOutputSchema = z.object({
+  action: z.enum(['create', 'delete', 'test']),
+  id: z.string().nullable(),
+  url: z.string().nullable(),
+  webhook: EventWebhookSchema.optional(),
+});
+
+export const SubuserSchema = z
+  .object({
+    id: z.number().optional(),
+    username: z.string(),
+    email: z.string().optional(),
+    disabled: z.boolean().optional(),
+    region: z.string().optional(),
+  })
+  .passthrough();
+
+export const SubuserListOutputSchema = z.object({
+  count: z.number().int().nonnegative(),
+  limit: z.number().int().positive(),
+  offset: z.number().int().nonnegative(),
+  has_more: z.boolean(),
+  subusers: z.array(SubuserSchema),
+});
+
 export const DeleteSuppressionOutputSchema = z.object({
   deleted: z.boolean(),
   type: z.string(),

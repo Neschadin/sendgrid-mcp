@@ -17,6 +17,7 @@ import {
   EmailStatsOutputSchema,
   EventWebhookListOutputSchema,
   EventWebhookSchema,
+  ManageEventWebhookOutputSchema,
   ListSuppressionsOutputSchema,
   MessageActivitySchema,
   ReceivedWebhookEventsOutputSchema,
@@ -467,6 +468,139 @@ export function registerDiagnosticsTools(
           },
         ],
       };
+    },
+  );
+
+  const WebhookEventFields = {
+    enabled: z.boolean().optional(),
+    friendlyName: z.string().nullable().optional(),
+    bounce: z.boolean().optional(),
+    click: z.boolean().optional(),
+    deferred: z.boolean().optional(),
+    delivered: z.boolean().optional(),
+    dropped: z.boolean().optional(),
+    groupResubscribe: z.boolean().optional(),
+    groupUnsubscribe: z.boolean().optional(),
+    open: z.boolean().optional(),
+    processed: z.boolean().optional(),
+    spamReport: z.boolean().optional(),
+    unsubscribe: z.boolean().optional(),
+    oauthClientId: z.string().nullable().optional(),
+    oauthClientSecret: z.string().nullable().optional(),
+    oauthTokenUrl: z.string().nullable().optional(),
+  };
+
+  server.registerTool(
+    'manage_event_webhook',
+    {
+      description:
+        'Create, delete, or test a SendGrid Event Webhook. create requires url. delete requires id. test sends a sample event to url, or to the saved webhook url when only id is set.',
+      inputSchema: z
+        .object({
+          confirmToken: ConfirmTokenSchema,
+          action: z.enum(['create', 'delete', 'test']),
+          id: z.string().min(1).optional(),
+          url: z.url().optional(),
+          ...WebhookEventFields,
+        })
+        .superRefine((value, ctx) => {
+          if (value.action === 'create' && !value.url) {
+            ctx.addIssue({
+              code: 'custom',
+              message: 'url is required when action is create',
+              path: ['url'],
+            });
+          }
+          if (value.action === 'delete' && !value.id) {
+            ctx.addIssue({
+              code: 'custom',
+              message: 'id is required when action is delete',
+              path: ['id'],
+            });
+          }
+          if (value.action === 'test' && !value.url && !value.id) {
+            ctx.addIssue({
+              code: 'custom',
+              message: 'test requires url or id',
+              path: ['url'],
+            });
+          }
+        }),
+      outputSchema: ManageEventWebhookOutputSchema,
+    },
+    async ({
+      action,
+      id,
+      url,
+      enabled,
+      friendlyName,
+      bounce,
+      click,
+      deferred,
+      delivered,
+      dropped,
+      groupResubscribe,
+      groupUnsubscribe,
+      open,
+      processed,
+      spamReport,
+      unsubscribe,
+      oauthClientId,
+      oauthClientSecret,
+      oauthTokenUrl,
+    }) => {
+      const eventPayload = {
+        enabled,
+        friendly_name: friendlyName,
+        bounce,
+        click,
+        deferred,
+        delivered,
+        dropped,
+        group_resubscribe: groupResubscribe,
+        group_unsubscribe: groupUnsubscribe,
+        open,
+        processed,
+        spam_report: spamReport,
+        unsubscribe,
+        oauth_client_id: oauthClientId ?? undefined,
+        oauth_client_secret: oauthClientSecret ?? undefined,
+        oauth_token_url: oauthTokenUrl ?? undefined,
+      };
+
+      if (action === 'delete') {
+        await client.deleteEventWebhook(id!);
+        return jsonReadResult(
+          { action, id: id ?? null, url: null },
+          `Deleted Event Webhook ${id}.`,
+        );
+      }
+
+      let targetUrl = url;
+      if (action === 'test' && !targetUrl && id) {
+        const existing = await client.getEventWebhook(id);
+        targetUrl = existing.url;
+      }
+      if (!targetUrl) {
+        throw new Error('Event Webhook url is missing.');
+      }
+
+      if (action === 'create') {
+        const webhook = await client.createEventWebhook({
+          ...eventPayload,
+          url: targetUrl,
+        });
+        return jsonReadResult(
+          { action, id: webhook.id ?? null, url: webhook.url ?? targetUrl, webhook },
+          `Created Event Webhook ${webhook.id} -> ${webhook.url ?? targetUrl}`,
+        );
+      }
+
+      await client.testEventWebhook({ url: targetUrl, id });
+      return jsonReadResult(
+        { action, id: id ?? null, url: targetUrl },
+        `Sent Event Webhook test notification to ${targetUrl}.`,
+      );
     },
   );
 
