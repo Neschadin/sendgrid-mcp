@@ -6,7 +6,8 @@ bun.lockb
 
 ## Build artifacts
 dist/
-bin/
+bin/sendgrid
+bin/sendgrid.exe
 .tmp-typecheck/
 *.tsbuildinfo
 

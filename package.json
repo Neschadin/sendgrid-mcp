@@ -1,8 +1,10 @@
 {
-  "name": "sendgrid-mcp",
-  "version": "2.0.0",
-  "description": "SendGrid MCP Server — templates, preflight send, diagnostics, account & console settings",
+  "name": "@neschadin/sendgrid-mcp",
+  "version": "3.0.0",
+  "mcpName": "io.github.Neschadin/sendgrid-mcp",
+  "description": "MCP server for Twilio SendGrid transactional email: preflight send, templates, delivery diagnostics, and console settings",
   "type": "module",
+  "module": "src/index.ts",
   "license": "MIT",
   "author": "Neschadin",
   "repository": {
@@ -22,24 +24,34 @@
     "model-context-protocol"
   ],
   "bin": {
-    "sendgrid-mcp": "bin/sendgrid"
+    "sendgrid-mcp": "bin/sendgrid-mcp"
   },
   "files": [
-    "bin/sendgrid",
+    "bin",
+    "src",
+    "!**/*.test.ts",
     "MCP_TOOLS.md",
     "LICENSE",
-    "README.md"
+    "README.md",
+    "mcp.json.example"
   ],
+  "engines": {
+    "bun": ">=1.4.2"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "scripts": {
     "dev": "bun --env-file=.env --watch src/index.ts",
-    "start": "bun --env-file=.env src/index.ts",
+    "start": "bun --env-file=.env run bin/sendgrid-mcp",
     "build": "bun build --compile src/index.ts --outfile bin/sendgrid",
-    "build:release": "bash scripts/build-release.sh",
     "inspect": "bun --env-file=.env x @modelcontextprotocol/inspector bun --env-file=.env src/index.ts",
-    "typecheck": "bun build src/index.ts --outdir .tmp-typecheck --target bun",
+    "typecheck": "tsc --noEmit",
     "lint": "oxlint",
     "smoke": "bun run scripts/smoke-register-tools.ts",
-    "test": "bun test tests"
+    "test": "bun test tests",
+    "prepack": "bun test && bun run typecheck"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.3.1",

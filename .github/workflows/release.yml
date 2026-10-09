@@ -5,41 +5,165 @@ on:
     branches:
       - main
     tags:
-      - 'v*'
+      - 'v*.*.*'
+      - 'v*.*.*-*'
   pull_request:
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
-  contents: write
+  contents: read
+
+env:
+  BUN_VERSION: '1.4.2'
 
 jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
-      - run: bun install --frozen-lockfile
-      - run: bun run lint
-      - run: bun run typecheck
-      - run: bun run smoke
+          bun-version: ${{ env.BUN_VERSION }}
 
-  release:
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Lint
+        run: bun run lint
+
+      - name: Unit tests
+        run: bun test
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Smoke
+        run: bun run smoke
+
+      - name: Validate MCP registry metadata
+        run: |
+          bun -e '
+            const pkg = await Bun.file("package.json").json();
+            const server = await Bun.file("server.json").json();
+            const name = "io.github.Neschadin/sendgrid-mcp";
+            if (pkg.name !== "@neschadin/sendgrid-mcp") throw new Error(`package.json name: ${pkg.name}`);
+            if (pkg.mcpName !== name) throw new Error(`package.json mcpName: ${pkg.mcpName}`);
+            if (server.name !== name) throw new Error(`server.json name: ${server.name}`);
+            const entry = server.packages?.[0];
+            if (entry?.registryType !== "npm") throw new Error(`registryType: ${entry?.registryType}`);
+            if (entry?.identifier !== pkg.name) throw new Error(`identifier: ${entry?.identifier}`);
+            if (entry?.transport?.type !== "stdio") throw new Error(`transport: ${entry?.transport?.type}`);
+            if (entry?.runtimeHint !== "bunx") throw new Error(`runtimeHint: ${entry?.runtimeHint}`);
+            if (server.version !== pkg.version || entry?.version !== pkg.version) {
+              throw new Error(`version drift: package.json ${pkg.version}, server.json ${server.version}/${entry?.version}`);
+            }
+          '
+
+  npm-publish:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: verify
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
     steps:
       - uses: actions/checkout@v7
+
+      - name: Validate release tag
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          if ! [[ "$TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Tag must be semver (vX.Y.Z): got ${GITHUB_REF_NAME}" >&2
+            exit 1
+          fi
+
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
-      - run: bun install --frozen-lockfile
-      - run: bun run build:release
-      - uses: softprops/action-gh-release@v3
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - uses: actions/setup-node@v7
         with:
-          files: |
-            dist/sendgrid-linux-x64
-            dist/sendgrid-linux-arm64
-            dist/sendgrid-darwin-x64
-            dist/sendgrid-darwin-arm64
-            dist/sendgrid-windows-x64.exe
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Sync package version from tag
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          export TAG
+          bun -e "const p=await Bun.file('package.json').json(); p.version=process.env.TAG!; await Bun.write('package.json', JSON.stringify(p,null,2)+'\n')"
+          node -e "console.log('package.json version:', require('./package.json').version)"
+
+      # Trusted Publishing (OIDC). Do not set NODE_AUTH_TOKEN or NPM_TOKEN.
+      - name: Publish to npm
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          if npm view "@neschadin/sendgrid-mcp@${TAG}" version >/dev/null 2>&1; then
+            echo "@neschadin/sendgrid-mcp@${TAG} already on npm"
+          elif [[ "$TAG" == *-* ]]; then
+            npm publish --access public --tag next
+          else
+            npm publish --access public
+          fi
+
+  mcp-registry:
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
+    needs: npm-publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+
+      - name: Authenticate to MCP Registry
+        run: ./mcp-publisher login github-oidc
+
+      - name: Set server.json version from tag
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          export TAG
+          bun -e 'const s=await Bun.file("server.json").json(); s.version=process.env.TAG; s.packages[0].version=process.env.TAG; await Bun.write("server.json", JSON.stringify(s,null,2)+"\n")'
+
+      - name: Publish server to MCP Registry
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          NPM_URL="https://registry.npmjs.org/@neschadin%2fsendgrid-mcp/${TAG}"
+          ready=0
+          for i in $(seq 1 30); do
+            meta="$(curl -fsS "$NPM_URL" || true)"
+            if [[ -n "$meta" ]] && printf '%s' "$meta" | bun -e 'const j=await Bun.stdin.json(); process.exit(j.mcpName==="io.github.Neschadin/sendgrid-mcp"?0:1)'; then
+              ready=1
+              break
+            fi
+            echo "npm @neschadin/sendgrid-mcp@${TAG} not readable yet (${i}/30)"
+            sleep 15
+          done
+          if [[ "$ready" -ne 1 ]]; then
+            echo "timed out waiting for npm @neschadin/sendgrid-mcp@${TAG}" >&2
+            exit 1
+          fi
+          URL="https://registry.modelcontextprotocol.io/v0.1/servers/io.github.Neschadin%2Fsendgrid-mcp/versions/${TAG}"
+          code="$(curl -sS -o /dev/null -w '%{http_code}' "$URL")"
+          if [[ "$code" == "200" ]]; then
+            echo "io.github.Neschadin/sendgrid-mcp@${TAG} already in the MCP registry"
+          else
+            ./mcp-publisher publish
+          fi

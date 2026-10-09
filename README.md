@@ -4,127 +4,105 @@
 
 # SendGrid MCP Server
 
-MCP server for [Twilio SendGrid](https://sendgrid.com): transactional email with preflight checks, template management, delivery diagnostics, account/console settings, and optional local Event Webhook capture.
+This server is for **transactional send and delivery**, not a map of the whole SendGrid API.
 
-**End users run a single compiled binary — Bun is not required.**
+A thin SendGrid MCP treats `POST /v3/mail/send` as one call and spends the rest of its tools on contacts, lists, and campaigns. Those marketing APIs are out of scope here. The tools follow the checks SendGrid's own delivery troubleshooting expects:
 
-Contact/list marketing CRUD is intentionally out of scope.
+1. **Before send.** `sendgrid_validate_send_request` checks the `/v3/mail/send` payload, that the dynamic template version is active, sender identity (domain authentication or a verified sender), link branding, recipient suppressions including the ASM group on the send, the DMARC warn list (`GET /v3/verified_senders/domains`), and that `send_at` is in the future and inside 72 hours. `sendgrid_send_with_preflight` posts only when that report has no blockers. Sandbox mode accepts the payload and does not deliver.
+2. **After accept.** The `x-message-id` response header is not a `msg_id`. Pass it as `xMessageId`; search compiles `msg_id LIKE '<id>%'`, then `sendgrid_get_message_activity` reads the event chain (`reason`, `bounce_type`, `asm_group_id`, `outbound_ip`). Email Activity has no real offset. If Activity returns 403/404, or the region is `eu` and Activity is empty, use Email Logs (`POST /v3/logs`) with `to_email` equality. Logs rejects `msg_id`, `from_email`, and `LIKE`.
+3. **When it did not arrive.** `sendgrid_check_suppression` and `sendgrid_triage_delivery_issue` cover bounce, block, spam, invalid, global unsubscribe, and ASM groups. `sendgrid_delete_suppression` lifts one entry. `sendgrid_classify_sendgrid_error` and `sendgrid_get_scopes` explain a 403. Paused or canceled scheduled batches are listed; a batch that was only given `send_at` is not in that list until you pause or cancel it.
+4. **The pipe around the send.** Dynamic templates (including bulk rename and pruning inactive versions), Event Webhook create/update/test plus an optional local receiver, and the console settings that change delivery: domains, link branding, enforced TLS, mail and tracking settings, alerts, inbound parse.
+
+Install: `bunx --no-env-file x @neschadin/sendgrid-mcp`.
+
+Full catalog and runbooks: [`MCP_TOOLS.md`](./MCP_TOOLS.md).
 
 This project is community-maintained and is not affiliated with, endorsed by, or sponsored by Twilio SendGrid.
 
-## Features
-
-- **Safe send** — `sendgrid_validate_send_request`, `sendgrid_send_with_preflight`, sandbox mode
-- **Templates** — list/create/update/activate dynamic templates
-- **Diagnostics** — Email Activity, suppressions, stats, error classification, delivery triage
-- **Webhooks** — Event Webhook config in SendGrid + optional local receiver (ngrok-friendly)
-- **Account & console** — verified senders, domain auth, mail/tracking settings, alerts, inbound parse
-
-Full tool catalog: [`MCP_TOOLS.md`](./MCP_TOOLS.md)
-
-## Install (binary)
-
-Download the binary for your OS from [GitHub Releases](https://github.com/Neschadin/sendgrid-mcp/releases).
-
-| Platform            | Asset                      |
-| ------------------- | -------------------------- |
-| Linux x64           | `sendgrid-linux-x64`       |
-| Linux arm64         | `sendgrid-linux-arm64`     |
-| macOS Intel         | `sendgrid-darwin-x64`      |
-| macOS Apple Silicon | `sendgrid-darwin-arm64`    |
-| Windows x64         | `sendgrid-windows-x64.exe` |
-
-```bash
-chmod +x sendgrid-linux-x64
-mv sendgrid-linux-x64 ~/.local/bin/sendgrid
-```
-
-The binary is built with `bun build --compile` and **embeds the Bun runtime**. Users do not install Bun.
-
 ## Requirements
 
-- A [SendGrid API key](https://app.sendgrid.com/settings/api_keys) with scopes for the tools you use
-- A **verified sender** address matching `SENDGRID_FROM_EMAIL`
+- [Bun](https://bun.sh) ≥ 1.4.2
+- A [SendGrid API key](https://app.sendgrid.com/settings/api_keys) with scopes for the tools you call. Keys normally start with `SG.`; any other prefix only logs a warning
+- A verified sender address in `SENDGRID_FROM_EMAIL`
 - An MCP client (Cursor, Claude Desktop, VS Code, etc.)
 
-Each user runs the server locally with **their own** API key (bring-your-own-key). Do not share one hosted instance with shared credentials.
+One process, one API key. Do not share a hosted instance across tenants.
 
 ## Configuration
 
-### Required environment variables
+### Required
 
 | Variable              | Description                            |
 | --------------------- | -------------------------------------- |
-| `SENDGRID_API_KEY`    | SendGrid API key (`SG....`)            |
+| `SENDGRID_API_KEY`    | SendGrid API key                       |
 | `SENDGRID_FROM_EMAIL` | Default From address (verified sender) |
 
-### Optional
+### SendGrid
 
-| Variable                 | Default                       | Description                                                                                                      |
-| ------------------------ | ----------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `SENDGRID_FROM_NAME`     | `SendGrid MCP`                | Default From display name                                                                                        |
-| `SENDGRID_REGION`        | `global`                      | Use `eu` for `https://api.eu.sendgrid.com/v3`. Also makes an empty Email Activity search fall back to Email Logs |
-| `SENDGRID_API_BASE_URL`  | `https://api.sendgrid.com/v3` | Full SendGrid API base URL override                                                                              |
-| `SENDGRID_ON_BEHALF_OF`  | —                             | `on-behalf-of` header value: a subuser username, or `account-id <id>` for a customer account                     |
-| `READ_ONLY`              | `false`                       | When `true`, tools that send mail or change SendGrid return an error before any request                          |
-| `SENDGRID_MCP_LOG_LEVEL` | `info`                        | `debug` \| `info` \| `warn` \| `error`                                                                           |
-| `MCP_TRANSPORT`          | `stdio`                       | `http` serves Streamable HTTP at `/mcp`                                                                          |
-| `MCP_HTTP_HOST`          | `127.0.0.1`                   | Bind address. Non-loopback requires auth, an allowlist, and TLS or `MCP_TRUST_PROXY=true`                        |
-| `MCP_HTTP_PORT`          | `3000`                        | HTTP port                                                                                                        |
-| `MCP_AUTH_MODE`          | `token`                       | `token` or `none`. `none` is refused off loopback                                                                |
-| `MCP_AUTH_TOKEN`         | —                             | Bearer token required for `MCP_AUTH_MODE=token`                                                                  |
-| `MCP_ALLOWED_HOSTS`      | loopback names                | Comma-separated Host allowlist. Required off loopback                                                            |
-| `MCP_ALLOWED_ORIGINS`    | loopback origins              | Comma-separated Origin allowlist. Missing Origin is allowed                                                      |
-| `MCP_TLS_KEY_FILE`       | —                             | TLS private key. Set with `MCP_TLS_CERT_FILE`                                                                    |
-| `MCP_TLS_CERT_FILE`      | —                             | TLS certificate                                                                                                  |
-| `MCP_TRUST_PROXY`        | `false`                       | Plain HTTP off loopback is allowed only behind your own TLS proxy                                                |
+| Variable                 | Default        | Description                                                                                                      |
+| ------------------------ | -------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `SENDGRID_FROM_NAME`     | `SendGrid MCP` | Default From display name                                                                                        |
+| `SENDGRID_REGION`        | `global`       | `global` or `eu` (case-insensitive). `eu` uses `https://api.eu.sendgrid.com/v3` and falls back to Email Logs when Activity is empty |
+| `SENDGRID_API_BASE_URL`  | from region    | Override the API host. `https://` or `http://`                                                                   |
+| `SENDGRID_ON_BEHALF_OF`  | —              | Default `on-behalf-of` header: a subuser username, or `account-id <id>`                                          |
+| `READ_ONLY`              | `false`        | `true` blocks send and mutating tools before any request                                                         |
+| `SENDGRID_MCP_LOG_LEVEL` | `info`         | `debug`, `info`, `warn`, or `error`                                                                              |
 
-`SENDGRID_REGION` is case-insensitive (`eu` and `EU` both select the EU API). The MCP handshake `instructions` repeat the region, API base, from address, and the safe-send / delivery workflow. Tool arguments larger than 10000 combined array elements and object members are rejected. Responses replace `oauth_client_secret` and `api_key` values with a length marker.
+Every tool also accepts `onBehalfOf`. The value `"parent"` skips `SENDGRID_ON_BEHALF_OF` for that call. List subusers with `sendgrid_list_subusers` (the parent key needs that scope; this key may 403).
 
-### Optional: local Event Webhook receiver
+Handshake `instructions` repeat the region, API base, from address, and the workflow above. A tool call with more than 10000 combined array elements and object members is rejected. Results replace `oauth_client_secret` and `api_key` values with a length marker.
 
-Enabled only when `SENDGRID_EVENT_WEBHOOK_PORT` is set.
+### Remote HTTP
 
-| Variable                                   | Default                            |
-| ------------------------------------------ | ---------------------------------- |
-| `SENDGRID_EVENT_WEBHOOK_PORT`              | _(disabled)_                       |
-| `SENDGRID_EVENT_WEBHOOK_HOST`              | `0.0.0.0`                          |
-| `SENDGRID_EVENT_WEBHOOK_PATH`              | `/sendgrid/events`                 |
-| `SENDGRID_EVENT_WEBHOOK_HEALTH_PATH`       | `/sendgrid/events/health`          |
-| `SENDGRID_EVENT_WEBHOOK_MAX_EVENTS`        | `5000`                             |
-| `SENDGRID_EVENT_WEBHOOK_VERBOSE`           | `false`                            |
-| `SENDGRID_EVENT_WEBHOOK_REQUIRE_SIGNATURE` | `false`                            |
-| `SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY`        | — (required if signature enforced) |
+Leave `MCP_TRANSPORT` unset for stdio. Set `MCP_TRANSPORT=http` to serve Streamable HTTP on `/mcp` (`/health` is unauthenticated).
 
-Point SendGrid Event Webhook URL to your tunnel, e.g. `https://<ngrok-host>/sendgrid/events`. Inspect events via MCP tools `get_received_webhook_events` / `get_webhook_receiver_status`.
+| Variable              | Default        | Description                                                                 |
+| --------------------- | -------------- | --------------------------------------------------------------------------- |
+| `MCP_HTTP_HOST`       | `127.0.0.1`    | Bind address                                                                |
+| `MCP_HTTP_PORT`       | `3000`         | Port                                                                        |
+| `MCP_AUTH_MODE`       | `token`        | `token` or `none`. `none` is refused when the bind address is not loopback |
+| `MCP_AUTH_TOKEN`      | —              | Bearer token. Required for `token` mode                                    |
+| `MCP_ALLOWED_HOSTS`   | loopback names | Comma-separated `Host` allowlist. Required off loopback                     |
+| `MCP_ALLOWED_ORIGINS` | loopback names | Comma-separated `Origin` allowlist. A missing `Origin` is allowed           |
+| `MCP_TLS_KEY_FILE`    | —              | TLS key. Set together with `MCP_TLS_CERT_FILE`                              |
+| `MCP_TLS_CERT_FILE`   | —              | TLS certificate                                                             |
+| `MCP_TRUST_PROXY`     | `false`        | Allow plaintext HTTP off loopback only behind your own TLS proxy            |
 
-For public tunnels, prefer signed webhook verification:
-`SENDGRID_EVENT_WEBHOOK_REQUIRE_SIGNATURE=true` and
-`SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY=<SendGrid public key>`.
+### Local Event Webhook receiver
+
+Off until `SENDGRID_EVENT_WEBHOOK_PORT` is set. The buffer is in-memory (default 5000 events) and is dropped when the process exits.
+
+| Variable                                   | Default                   |
+| ------------------------------------------ | ------------------------- |
+| `SENDGRID_EVENT_WEBHOOK_HOST`              | `0.0.0.0`                 |
+| `SENDGRID_EVENT_WEBHOOK_PATH`              | `/sendgrid/events`        |
+| `SENDGRID_EVENT_WEBHOOK_HEALTH_PATH`       | `/sendgrid/events/health` |
+| `SENDGRID_EVENT_WEBHOOK_MAX_EVENTS`        | `5000`                    |
+| `SENDGRID_EVENT_WEBHOOK_VERBOSE`           | `false`                   |
+| `SENDGRID_EVENT_WEBHOOK_REQUIRE_SIGNATURE` | `false`                   |
+| `SENDGRID_EVENT_WEBHOOK_PUBLIC_KEY`        | required when signature is required |
+
+Point the SendGrid Event Webhook URL at the tunnel, for example `https://<ngrok-host>/sendgrid/events`. Read what arrived with `sendgrid_get_received_webhook_events` and `sendgrid_get_webhook_receiver_status`. Create or test the SendGrid-side webhook with `sendgrid_manage_event_webhook`.
 
 ## MCP client setup
 
 ### Cursor
 
-Settings → MCP → add server (or edit `~/.cursor/mcp.json`):
+[`mcp.json.example`](./mcp.json.example). `--no-env-file` stops Bun from also reading a `.env` in the client cwd. In `~/.cursor/mcp.json`, `envFile` must be an absolute path.
 
 ```json
 {
   "mcpServers": {
     "sendgrid": {
-      "command": "/absolute/path/to/sendgrid",
-      "args": [],
-      "env": {
-        "SENDGRID_API_KEY": "SG.xxx",
-        "SENDGRID_FROM_EMAIL": "you@yourdomain.com",
-        "SENDGRID_FROM_NAME": "Your App"
-      }
+      "command": "bunx",
+      "args": ["--no-env-file", "x", "@neschadin/sendgrid-mcp"],
+      "envFile": "${workspaceFolder}/.env"
     }
   }
 }
 ```
 
-Remote Streamable HTTP (`MCP_TRANSPORT=http` on the server). Non-loopback needs `MCP_AUTH_TOKEN`, `MCP_ALLOWED_HOSTS`, and TLS or `MCP_TRUST_PROXY=true`.
+Remote HTTP, after the server process is started with `MCP_TRANSPORT=http`:
 
 ```json
 {
@@ -141,16 +119,19 @@ Remote Streamable HTTP (`MCP_TRANSPORT=http` on the server). Non-loopback needs 
 
 ### Claude Desktop
 
+No `envFile`. The desktop cwd is not your repo, so pass an absolute `--env-file`:
+
 ```json
 {
   "mcpServers": {
     "sendgrid": {
-      "command": "/absolute/path/to/sendgrid",
-      "args": [],
-      "env": {
-        "SENDGRID_API_KEY": "SG.xxx",
-        "SENDGRID_FROM_EMAIL": "you@yourdomain.com"
-      }
+      "command": "bunx",
+      "args": [
+        "--no-env-file",
+        "--env-file=/absolute/path/.env",
+        "x",
+        "@neschadin/sendgrid-mcp"
+      ]
     }
   }
 }
@@ -160,38 +141,28 @@ Restart the client after changing MCP config.
 
 ## Safety
 
-- **Send tools** can enqueue real email. Prefer `sendgrid_send_with_preflight` in automation. Set `READ_ONLY=true` to refuse every send and mutation before the API call.
-- **Subusers:** `SENDGRID_ON_BEHALF_OF` is sent as the `on-behalf-of` header on every request (subuser username, or `account-id <id>`).
-- **Mutating console tools** require `confirmToken: "CONFIRM"` (alerts, mail/tracking settings, verified senders, domains, webhooks).
-- **Email Activity** (`/v3/messages`) may require the [Email Activity add-on](https://www.twilio.com/docs/sendgrid/api-reference/email-activity/filter-all-messages).
+- Send tools can enqueue real mail. They do not ask for `confirmToken`. Use `sendgrid_send_with_preflight`, or set `READ_ONLY=true`.
+- Tools that change SendGrid (templates, suppressions, webhooks, domains, settings, scheduled-send pause/cancel) require `confirmToken` `"CONFIRM"`.
+- `READ_ONLY=true` blocks both sends and those mutations before the HTTP call.
+- Email Activity (`/v3/messages`) may require the [Email Activity add-on](https://www.twilio.com/docs/sendgrid/api-reference/email-activity/filter-all-messages).
 
-## v2 breaking changes
+## Development
 
-- MCP server name: `sendgrid-mcp-server`
-- All tool names are prefixed: `sendgrid_<name>` (e.g. `sendgrid_validate_send_request`)
-- List/read tools accept optional `response_format` (`markdown` | `json`) and return pagination metadata on list tools
-
-## Development (maintainers only)
-
-Bun is only needed to **build from source**, not to run the release binary.
+A git tag `vX.Y.Z` runs tests, publishes `@neschadin/sendgrid-mcp` to npm, then publishes `io.github.Neschadin/sendgrid-mcp` to the MCP registry. The release has no binary assets.
 
 ```bash
 git clone https://github.com/Neschadin/sendgrid-mcp.git
 cd sendgrid-mcp
 bun install
-bun run dev          # stdio MCP from TypeScript; loads .env via --env-file
-bun run build        # compile → bin/sendgrid (local platform)
-./scripts/build-release.sh   # all release targets → dist/
+bun run dev          # stdio MCP; loads .env
 bun run lint
-bun run typecheck:tsc   # bun build graph + unit tests
+bun run typecheck
 bun run smoke
-bun test tests
+bun test
 ```
 
-### MCP Inspector
-
 ```bash
-SENDGRID_API_KEY=SG.xxx SENDGRID_FROM_EMAIL=you@domain.com bun run inspect
+bun run inspect
 ```
 
 ## Docs

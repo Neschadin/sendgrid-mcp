@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "sendgrid": {
+      "command": "bunx",
+      "args": ["--no-env-file", "x", "@neschadin/sendgrid-mcp"],
+      "envFile": "${workspaceFolder}/.env"
+    }
+  }
+}

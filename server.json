@@ -1,0 +1,65 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.Neschadin/sendgrid-mcp",
+  "title": "SendGrid Transactional",
+  "description": "MCP server for Twilio SendGrid transactional email: preflight send, templates, delivery diagnostics, and console settings.",
+  "repository": {
+    "url": "https://github.com/Neschadin/sendgrid-mcp",
+    "source": "github"
+  },
+  "version": "3.0.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@neschadin/sendgrid-mcp",
+      "version": "3.0.0",
+      "runtimeHint": "bunx",
+      "runtimeArguments": [
+        {
+          "type": "positional",
+          "value": "--no-env-file"
+        },
+        {
+          "type": "positional",
+          "value": "x"
+        },
+        {
+          "type": "positional",
+          "value": "@neschadin/sendgrid-mcp"
+        }
+      ],
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "SENDGRID_API_KEY",
+          "description": "SendGrid API key (SG....)",
+          "isRequired": true,
+          "isSecret": true
+        },
+        {
+          "name": "SENDGRID_FROM_EMAIL",
+          "description": "Default From address. Must be a verified sender.",
+          "isRequired": true,
+          "isSecret": false
+        },
+        {
+          "name": "SENDGRID_FROM_NAME",
+          "description": "Default From display name",
+          "isRequired": false
+        },
+        {
+          "name": "SENDGRID_REGION",
+          "description": "global (default) or eu",
+          "isRequired": false
+        },
+        {
+          "name": "READ_ONLY",
+          "description": "When true, send and mutating tools return an error before any SendGrid request",
+          "isRequired": false
+        }
+      ]
+    }
+  ]
+}
