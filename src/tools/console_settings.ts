@@ -6,6 +6,7 @@ import type {
   TrackingSettingName,
 } from '../client';
 import {
+  EnforcedTlsOutputSchema,
   InboundParseSettingsListOutputSchema,
   jsonReadResult,
   jsonText,
@@ -56,6 +57,24 @@ export function registerConsoleSettingsTools(
   client: SendGridClient,
 ) {
   ensureSafeToolRegistration(server);
+
+  server.registerTool(
+    'get_enforced_tls',
+    {
+      description:
+        'Read Enforced TLS settings (GET /v3/user/settings/enforced_tls). require_tls drops mail when the recipient MX does not offer TLS.',
+      inputSchema: z.object({ ...ReadInputFields }),
+      outputSchema: EnforcedTlsOutputSchema,
+    },
+    async ({ response_format }) => {
+      const settings = await client.getEnforcedTls();
+      return jsonReadResult(
+        settings,
+        `require_tls=${settings.require_tls} require_valid_cert=${settings.require_valid_cert} version=${settings.version}`,
+        response_format,
+      );
+    },
+  );
 
   server.registerTool(
     'list_mail_settings',

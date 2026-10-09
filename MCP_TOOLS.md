@@ -94,7 +94,7 @@ Out of scope: contact/list marketing CRUD.
 - **Caveats:** Local constants parsing is regex-based.
 
 ### `sendgrid_validate_send_request`
-- **Purpose:** Preflight checks before send. Run this before any `send_*` call. Validates `/v3/mail/send` payload shape, active dynamic template, sender identity (domain authentication or verified sender), link branding alignment, recipient suppressions (including ASM group unsubscribe when `asm.groupId` is set), and scheduling limits (`send_at` future + within 72 hours).
+- **Purpose:** Preflight checks before send. Run this before any `send_*` call. Validates `/v3/mail/send` payload shape, active dynamic template, sender identity (domain authentication or verified sender), link branding alignment, recipient suppressions (including ASM group unsubscribe when `asm.groupId` is set), DMARC warn-list domains from `GET /v3/verified_senders/domains`, and scheduling limits (`send_at` future + within 72 hours).
 - **Inputs:** `request`, optional `partnerAccountId`, `checkSenderIdentity`.
 - **Output:** `structuredContent` with `ok`, `blockers`, `warnings`, `info`.
 - **Typical flow:** Dry-run review before every production send.
@@ -143,6 +143,16 @@ Out of scope: contact/list marketing CRUD.
 - **Typical flow:** Deferred delivery and pacing.
 - **Caveats:** `sendAt` must be in the future and within SendGrid's 72-hour scheduling window.
 
+### `sendgrid_list_scheduled_sends`
+- **Purpose:** List batches that are paused or canceled (`GET /v3/user/scheduled_sends`).
+- **Inputs:** none.
+- **Caveats:** A `send_at` batch that was never paused or canceled is absent.
+
+### `sendgrid_get_scheduled_send`
+- **Purpose:** Read pause/cancel state for one `batch_id`.
+- **Inputs:** `batchId`.
+- **Caveats:** A missing batch comes back from SendGrid as `200` and `[]`, not 404. This tool reports that as not found.
+
 ### `sendgrid_pause_scheduled_send`
 - **Purpose:** Pause scheduled batch.
 - **Inputs:** `confirmToken="CONFIRM"`, `batchId`.
@@ -190,6 +200,21 @@ Out of scope: contact/list marketing CRUD.
 - **Inputs:** `msgId` — full `msg_id` or the Mail Send `x-message-id`.
 - **Typical flow:** Deep dive after search. An `x-message-id` is resolved with `msg_id LIKE` and then re-fetched.
 - **Caveats:** Activity may require the add-on. A full id that 403/404s is loaded from Email Logs, which has status and reason but no events. EU regional subusers often have no Activity detail.
+
+### `sendgrid_list_asm_groups`
+- **Purpose:** List ASM unsubscribe groups (`GET /v3/asm/groups`) so `asm.groupId` does not have to be guessed.
+- **Inputs:** none.
+- **Caveats:** Not a marketing contact list.
+
+### `sendgrid_create_asm_group`
+- **Purpose:** Create an ASM unsubscribe group.
+- **Inputs:** `confirmToken="CONFIRM"`, `name`, `description`, optional `isDefault`.
+- **Caveats:** Does not add recipients.
+
+### `sendgrid_list_categories`
+- **Purpose:** List category names (`GET /v3/categories`) for `sendgrid_get_email_stats` `dimension=category`.
+- **Inputs:** optional `category`, `limit`, `offset`.
+- **Caveats:** Names only, not metrics.
 
 ### `sendgrid_list_suppressions`
 - **Purpose:** Enumerate suppression entries by type.
@@ -303,6 +328,7 @@ All Phase 1 read tools return `structuredContent` + `outputSchema` (account/prof
 - `sendgrid_list_authenticated_domains` / `sendgrid_get_authenticated_domain`
 - `sendgrid_list_branded_links` / `sendgrid_get_branded_link`
 - `sendgrid_list_alerts` / `sendgrid_get_alert`
+- `sendgrid_get_enforced_tls` — `GET /user/settings/enforced_tls`
 - `sendgrid_list_mail_settings` / `sendgrid_get_mail_setting`
 - `sendgrid_list_tracking_settings` / `sendgrid_get_tracking_setting`
 - `sendgrid_list_inbound_parse_settings`
@@ -368,6 +394,8 @@ Tool risk classification:
 - `sendgrid_send_sandbox_email`: `send`
 - `sendgrid_send_test_email`: `send`
 - `sendgrid_create_batch_id`: `mutates-sendgrid`
+- `sendgrid_list_scheduled_sends`: `read-only`
+- `sendgrid_get_scheduled_send`: `read-only`
 - `sendgrid_schedule_email`: `send`
 - `sendgrid_pause_scheduled_send`: `mutates-sendgrid`
 - `sendgrid_resume_scheduled_send`: `mutates-sendgrid`
@@ -386,6 +414,9 @@ Tool risk classification:
 - `sendgrid_classify_sendgrid_error`: `read-only`
 - `sendgrid_triage_delivery_issue`: `read-only`
 - `sendgrid_analyze_engagement_anomalies`: `read-only`
+- `sendgrid_list_asm_groups`: `read-only`
+- `sendgrid_create_asm_group`: `mutates-sendgrid`
+- `sendgrid_list_categories`: `read-only`
 - `sendgrid_list_suppressions`: `read-only`
 - `sendgrid_check_suppression`: `read-only`
 - `sendgrid_delete_suppression`: `mutates-sendgrid`
@@ -403,6 +434,7 @@ Tool risk classification:
 - `sendgrid_get_branded_link`: `read-only`
 - `sendgrid_list_alerts`: `read-only`
 - `sendgrid_get_alert`: `read-only`
+- `sendgrid_get_enforced_tls`: `read-only`
 - `sendgrid_list_mail_settings`: `read-only`
 - `sendgrid_get_mail_setting`: `read-only`
 - `sendgrid_list_tracking_settings`: `read-only`

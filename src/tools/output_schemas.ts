@@ -122,6 +122,42 @@ export const BatchIdOutputSchema = z.object({
   batchId: z.string(),
 });
 
+export const ScheduledSendSchema = z.object({
+  batch_id: z.string(),
+  status: z.enum(['pause', 'cancel']),
+});
+
+export const ScheduledSendListOutputSchema = z.object({
+  count: z.number().int().nonnegative(),
+  sends: z.array(ScheduledSendSchema),
+});
+
+export const AsmGroupSchema = z
+  .object({
+    id: z.number().int(),
+    name: z.string(),
+    description: z.string().optional(),
+    is_default: z.boolean().optional(),
+    unsubscribes: z.number().int().optional(),
+  })
+  .passthrough();
+
+export const AsmGroupListOutputSchema = z.object({
+  count: z.number().int().nonnegative(),
+  groups: z.array(AsmGroupSchema),
+});
+
+export const CategoryListOutputSchema = z.object({
+  count: z.number().int().nonnegative(),
+  categories: z.array(z.string()),
+});
+
+export const EnforcedTlsOutputSchema = z.object({
+  require_tls: z.boolean(),
+  require_valid_cert: z.boolean(),
+  version: z.number(),
+});
+
 export const ClassifyErrorOutputSchema = z.object({
   category: z.string(),
   statusCode: z.number().nullable(),

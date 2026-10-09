@@ -418,12 +418,37 @@ export async function runSendPreflight(
   }
 
   const senderDomain = extractDomain(request.from.email);
-  if (PROVIDER_FREE_FROM_DOMAINS.has(senderDomain)) {
+  let dmarcWarned = false;
+  try {
+    const warnList = await client.listDomainWarnList();
+    const listed = (domains: string[]) =>
+      domains.some((domain) => domain.toLowerCase() === senderDomain);
+    if (listed(warnList.hardFailures)) {
+      dmarcWarned = true;
+      pushIssue(
+        issues,
+        'warning',
+        'DMARC_HARD_FAIL',
+        `From domain "${senderDomain}" is on SendGrid's DMARC hard-fail warn list (GET /v3/verified_senders/domains).`,
+      );
+    } else if (listed(warnList.softFailures)) {
+      dmarcWarned = true;
+      pushIssue(
+        issues,
+        'warning',
+        'DMARC_SOFT_FAIL',
+        `From domain "${senderDomain}" is on SendGrid's DMARC soft-fail warn list (GET /v3/verified_senders/domains).`,
+      );
+    }
+  } catch {
+    dmarcWarned = false;
+  }
+  if (!dmarcWarned && PROVIDER_FREE_FROM_DOMAINS.has(senderDomain)) {
     pushIssue(
       issues,
       'warning',
       'FREE_MAILBOX_FROM_DOMAIN',
-      `From domain "${senderDomain}" is often DMARC-sensitive for API sends.`,
+      `From domain "${senderDomain}" is often DMARC-sensitive for API sends. The SendGrid domain warn list could not be loaded.`,
     );
   }
 

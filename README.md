@@ -179,7 +179,7 @@ Bun is only needed to **build from source**, not to run the release binary.
 git clone https://github.com/Neschadin/sendgrid-mcp.git
 cd sendgrid-mcp
 bun install
-bun run dev          # stdio MCP from TypeScript
+bun run dev          # stdio MCP from TypeScript; loads .env via --env-file
 bun run build        # compile → bin/sendgrid (local platform)
 ./scripts/build-release.sh   # all release targets → dist/
 bun run lint

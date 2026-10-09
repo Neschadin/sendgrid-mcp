@@ -14,6 +14,7 @@ import {
   runWithToolAbortSignal,
 } from '../src/tool_signal';
 import {
+  activityQueryCanFallbackToLogs,
   activityQueryForXMessageId,
   compileActivitySearch,
   rejectActivityOffset,
@@ -86,6 +87,30 @@ describe('runSendPreflight', () => {
     );
   });
 
+  test('warns when SendGrid lists the from domain as a DMARC hard fail', async () => {
+    const client = {
+      listDomainWarnList: async () => ({
+        hardFailures: ['gmail.com'],
+        softFailures: [],
+      }),
+    } as unknown as SendGridClient;
+
+    const report = await runSendPreflight(
+      client,
+      {
+        personalizations: [{ to: [{ email: 'user@example.com' }] }],
+        from: { email: 'me@gmail.com' },
+        subject: 'Hello',
+        content: [{ type: 'text/plain', value: 'Hi' }],
+      },
+      { checkSenderIdentity: false },
+    );
+
+    expect(report.warnings.some((issue) => issue.code === 'DMARC_HARD_FAIL')).toBe(
+      true,
+    );
+  });
+
   test('blocks a recipient unsubscribed from the send ASM group', async () => {
     const client = {
       listAuthenticatedDomains: async () => [
@@ -140,10 +165,18 @@ describe('activity query', () => {
     ).toBe('(to_email="user@example.com") AND msg_id LIKE \'abc%\'');
   });
 
+  test('does not forward Activity-only queries to Email Logs', () => {
+    expect(activityQueryCanFallbackToLogs("to_email='a@b.co'")).toBe(true);
+    expect(activityQueryCanFallbackToLogs("msg_id LIKE 'abc%'")).toBe(false);
+    expect(
+      activityQueryCanFallbackToLogs('from_email="a@b.co" AND to_email="c@d.co"'),
+    ).toBe(false);
+  });
+
   test('rejects Email Activity offset', () => {
     expect(() => rejectActivityOffset(0)).not.toThrow();
     expect(() => rejectActivityOffset(undefined)).not.toThrow();
-    expect(() => rejectActivityOffset(25)).toThrow(/no offset/);
+    expect(() => rejectActivityOffset(25)).toThrow(/does not document offset/);
   });
 });
 

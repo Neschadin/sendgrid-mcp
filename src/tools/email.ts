@@ -3,6 +3,9 @@ import { z } from 'zod';
 import type { SendGridClient } from '../client';
 import {
   BatchIdOutputSchema,
+  jsonReadResult,
+  ScheduledSendListOutputSchema,
+  ScheduledSendSchema,
   SendTestEmailOutputSchema,
 } from './output_schemas';
 import {
@@ -262,6 +265,46 @@ export function registerEmailTools(
           },
         ],
       };
+    },
+  );
+
+  server.registerTool(
+    'list_scheduled_sends',
+    {
+      description:
+        'List paused or canceled scheduled-send batches (GET /v3/user/scheduled_sends). A batch that was only scheduled with send_at, and never paused or canceled, is not in this list.',
+      inputSchema: z.object({}),
+      outputSchema: ScheduledSendListOutputSchema,
+    },
+    async () => {
+      const sends = await client.listScheduledSends();
+      return jsonReadResult(
+        { count: sends.length, sends },
+        sends.length === 0
+          ? 'No paused or canceled scheduled sends.'
+          : sends
+              .map((send) => `- ${send.batch_id} status=${send.status}`)
+              .join('\n'),
+      );
+    },
+  );
+
+  server.registerTool(
+    'get_scheduled_send',
+    {
+      description:
+        'Read pause/cancel state for one scheduled-send batch_id. SendGrid answers a missing batch with 200 and an empty array; this tool reports that as not found.',
+      inputSchema: z.object({
+        batchId: z.string().min(1),
+      }),
+      outputSchema: ScheduledSendSchema,
+    },
+    async ({ batchId }) => {
+      const send = await client.getScheduledSend(batchId);
+      return jsonReadResult(
+        send,
+        `Scheduled send ${send.batch_id} status=${send.status}`,
+      );
     },
   );
 

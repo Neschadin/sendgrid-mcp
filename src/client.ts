@@ -234,6 +234,25 @@ export interface ScheduledSendState {
   status: ScheduledSendStatus;
 }
 
+export interface AsmGroup {
+  id: number;
+  name: string;
+  description?: string;
+  is_default?: boolean;
+  unsubscribes?: number;
+}
+
+export interface DomainWarnList {
+  hardFailures: string[];
+  softFailures: string[];
+}
+
+export interface EnforcedTlsSettings {
+  require_tls: boolean;
+  require_valid_cert: boolean;
+  version: number;
+}
+
 export interface VerifiedSender {
   id: number;
   nickname?: string;
@@ -879,11 +898,38 @@ export class SendGridClient {
     return { batch_id: batchId, status };
   }
 
-  getScheduledSend(batchId: string): Promise<ScheduledSendState> {
-    return this.request<ScheduledSendState>(
+  async getScheduledSend(batchId: string): Promise<ScheduledSendState> {
+    const payload = await this.request<unknown>(
       'GET',
       `/user/scheduled_sends/${encodeURIComponent(batchId)}`,
     );
+    const rows = Array.isArray(payload) ? payload : [payload];
+    for (const row of rows) {
+      if (!isObject(row)) continue;
+      if (row['batch_id'] !== batchId) continue;
+      if (row['status'] !== 'pause' && row['status'] !== 'cancel') continue;
+      return {
+        batch_id: batchId,
+        status: row['status'],
+      };
+    }
+    throw new SendGridApiError({
+      status: 404,
+      method: 'GET',
+      path: `/user/scheduled_sends/${batchId}`,
+      errors: [
+        {
+          message:
+            'No pause or cancel exists for this batch_id. SendGrid returns 200 and an empty array, not 404.',
+        },
+      ],
+      rawBody: JSON.stringify(payload),
+    });
+  }
+
+  async listScheduledSends(): Promise<ScheduledSendState[]> {
+    const payload = await this.request<unknown>('GET', '/user/scheduled_sends');
+    return Array.isArray(payload) ? (payload as ScheduledSendState[]) : [];
   }
 
   async resumeScheduledSend(batchId: string): Promise<void> {
@@ -1182,6 +1228,61 @@ export class SendGridClient {
 
   getScopes(): Promise<{ scopes: string[] }> {
     return this.request<{ scopes: string[] }>('GET', '/scopes');
+  }
+
+  async listAsmGroups(): Promise<AsmGroup[]> {
+    const payload = await this.request<unknown>('GET', '/asm/groups');
+    return coerceArray<AsmGroup>(payload);
+  }
+
+  createAsmGroup(payload: {
+    name: string;
+    description: string;
+    is_default?: boolean;
+  }): Promise<AsmGroup> {
+    return this.request<AsmGroup>('POST', '/asm/groups', payload);
+  }
+
+  async listCategories(params?: {
+    limit?: number;
+    offset?: number;
+    category?: string;
+  }): Promise<string[]> {
+    const payload = await this.request<unknown>('GET', '/categories', undefined, {
+      limit: params?.limit,
+      offset: params?.offset,
+      category: params?.category,
+    });
+    if (!Array.isArray(payload)) return [];
+    return payload.flatMap((row) => {
+      if (typeof row === 'string') return [row];
+      if (
+        row &&
+        typeof row === 'object' &&
+        typeof (row as { category?: unknown }).category === 'string'
+      ) {
+        return [(row as { category: string }).category];
+      }
+      return [];
+    });
+  }
+
+  async listDomainWarnList(): Promise<DomainWarnList> {
+    const payload = await this.request<{
+      results?: { hard_failures?: unknown; soft_failures?: unknown };
+    }>('GET', '/verified_senders/domains');
+    const names = (value: unknown): string[] =>
+      Array.isArray(value)
+        ? value.filter((item): item is string => typeof item === 'string')
+        : [];
+    return {
+      hardFailures: names(payload.results?.hard_failures),
+      softFailures: names(payload.results?.soft_failures),
+    };
+  }
+
+  getEnforcedTls(): Promise<EnforcedTlsSettings> {
+    return this.request<EnforcedTlsSettings>('GET', '/user/settings/enforced_tls');
   }
 
   async listSubusers(params?: {

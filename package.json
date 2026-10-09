@@ -31,11 +31,11 @@
     "README.md"
   ],
   "scripts": {
-    "dev": "bun --watch src/index.ts",
-    "start": "bun src/index.ts",
+    "dev": "bun --env-file=.env --watch src/index.ts",
+    "start": "bun --env-file=.env src/index.ts",
     "build": "bun build --compile src/index.ts --outfile bin/sendgrid",
     "build:release": "bash scripts/build-release.sh",
-    "inspect": "bunx @modelcontextprotocol/inspector bun src/index.ts",
+    "inspect": "bun --env-file=.env x @modelcontextprotocol/inspector bun --env-file=.env src/index.ts",
     "typecheck": "bun build src/index.ts --outdir .tmp-typecheck --target bun",
     "lint": "oxlint",
     "smoke": "bun run scripts/smoke-register-tools.ts",

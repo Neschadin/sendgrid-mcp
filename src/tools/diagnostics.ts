@@ -10,7 +10,10 @@ import {
 } from './tool_utils';
 import {
   AnalyzeEngagementOutputSchema,
+  AsmGroupListOutputSchema,
+  AsmGroupSchema,
   AsmGroupSuppressionSchema,
+  CategoryListOutputSchema,
   ClassifyErrorOutputSchema,
   DeleteSuppressionOutputSchema,
   EmailLogsOutputSchema,
@@ -1178,6 +1181,57 @@ export function registerDiagnosticsTools(
   );
 
   server.registerTool(
+    'list_asm_groups',
+    {
+      description:
+        'List ASM unsubscribe groups (GET /v3/asm/groups). Use the id as asm.groupId when sending. This is not a marketing contact list.',
+      inputSchema: z.object({ ...ReadInputFields }),
+      outputSchema: AsmGroupListOutputSchema,
+    },
+    async ({ response_format }) => {
+      const groups = await client.listAsmGroups();
+      return jsonReadResult(
+        { count: groups.length, groups },
+        groups.length === 0
+          ? 'No ASM unsubscribe groups.'
+          : groups
+              .map(
+                (group) =>
+                  `- ${group.id} ${group.name} default=${String(group.is_default ?? false)} unsubscribes=${group.unsubscribes ?? 'n/a'}`,
+              )
+              .join('\n'),
+        response_format,
+      );
+    },
+  );
+
+  server.registerTool(
+    'create_asm_group',
+    {
+      description:
+        'Create an ASM unsubscribe group (POST /v3/asm/groups) for transactional mail. Does not create a marketing list.',
+      inputSchema: z.object({
+        confirmToken: ConfirmTokenSchema,
+        name: z.string().min(1).max(100),
+        description: z.string().min(1).max(255),
+        isDefault: z.boolean().optional(),
+      }),
+      outputSchema: AsmGroupSchema,
+    },
+    async ({ name, description, isDefault }) => {
+      const group = await client.createAsmGroup({
+        name,
+        description,
+        is_default: isDefault,
+      });
+      return jsonReadResult(
+        group,
+        `Created ASM group ${group.id} ${group.name}.`,
+      );
+    },
+  );
+
+  server.registerTool(
     'list_suppressions',
     {
       description:
@@ -1389,6 +1443,33 @@ export function registerDiagnosticsTools(
           '',
           ...(lines.length > 0 ? lines : ['No stats for the given range.']),
         ].join('\n'),
+        response_format,
+      );
+    },
+  );
+
+  server.registerTool(
+    'list_categories',
+    {
+      description:
+        'List category names (GET /v3/categories) so get_email_stats dimension=category can be given a real categories array.',
+      inputSchema: z.object({
+        category: z.string().min(1).optional().describe('Filter by category name prefix or exact name, per SendGrid'),
+        ...ListPagingInputFields,
+      }),
+      outputSchema: CategoryListOutputSchema,
+    },
+    async ({ category, limit, offset, response_format }) => {
+      const categories = await client.listCategories({
+        category,
+        limit: limit ?? 50,
+        offset: offset ?? 0,
+      });
+      return jsonReadResult(
+        { count: categories.length, categories },
+        categories.length === 0
+          ? 'No categories.'
+          : categories.map((name) => `- ${name}`).join('\n'),
         response_format,
       );
     },

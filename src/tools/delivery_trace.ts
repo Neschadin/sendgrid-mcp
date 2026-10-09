@@ -32,10 +32,30 @@ export function compileActivitySearch(input: {
   throw new Error('Provide query or xMessageId');
 }
 
+const EMAIL_LOGS_FIELDS = new Set([
+  'sg_message_id',
+  'subject',
+  'to_email',
+  'status',
+  'reason',
+  'categories',
+  'sg_message_id_created_at',
+]);
+
+/** Activity queries using msg_id/from_email/LIKE are rejected by POST /v3/logs. */
+export function activityQueryCanFallbackToLogs(query: string): boolean {
+  if (/\bLIKE\b/iu.test(query)) return false;
+  const identifiers = query.match(/[a-z_][a-z0-9_]*(?=\s*(?:=|IN\b|<|>))/giu) ?? [];
+  if (identifiers.length === 0) return false;
+  return identifiers.every((identifier) =>
+    EMAIL_LOGS_FIELDS.has(identifier.toLowerCase()),
+  );
+}
+
 export function rejectActivityOffset(offset: number | undefined): void {
   if (offset !== undefined && offset > 0) {
     throw new Error(
-      'GET /v3/messages has no offset. Remove offset and narrow the query with to_email, last_event_time, or msg_id LIKE.',
+      'GET /v3/messages does not document offset. A request that includes it still returns 200 and is not a reliable next page. Narrow the query with to_email, last_event_time, or msg_id LIKE.',
     );
   }
 }
@@ -153,6 +173,13 @@ export async function searchActivityOrLogs(
     const response = await client.filterMessages(query, limit);
     const messages = response.messages ?? [];
     if (messages.length === 0 && client.preferEmailLogs) {
+      if (!activityQueryCanFallbackToLogs(query)) {
+        return {
+          messages,
+          source: 'activity',
+          note: 'Email Activity returned no rows. This query cannot be sent to Email Logs: POST /v3/logs rejects msg_id, from_email, and LIKE.',
+        };
+      }
       try {
         const fromLogs = await logsMessages(client, query, limit);
         if (fromLogs.length > 0) {
@@ -179,6 +206,11 @@ export async function searchActivityOrLogs(
       (error.status !== 403 && error.status !== 404)
     ) {
       throw error;
+    }
+    if (!activityQueryCanFallbackToLogs(query)) {
+      throw new Error(
+        `Email Activity failed (${error.status}). Email Logs was not queried because POST /v3/logs rejects msg_id, from_email, and LIKE. Use to_email='...' with sendgrid_search_email_logs.`,
+      );
     }
     try {
       const fromLogs = await logsMessages(client, query, limit);
