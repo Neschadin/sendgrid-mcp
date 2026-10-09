@@ -1,34 +1,69 @@
 ---
-description: Development conventions for this SendGrid MCP server repository
+description: Development conventions for this SendGrid MCP server; look up live API shapes via the twilio-docs MCP
 alwaysApply: true
 ---
 
 # SendGrid MCP Server Development Rule
 
 - Scope is this repository only: build and maintain the SendGrid MCP server implementation.
-- Prefer SendGrid-side diagnostics over local guesses: use `/v3/messages`, suppressions, and Event Webhook APIs when adding or changing diagnostic behavior.
-- Keep contact/list marketing CRUD out of scope unless explicitly requested.
+- This product is Twilio SendGrid (`SG.` API keys, `api.sendgrid.com`). It is not the Twilio Email API (`comms.twilio.com`, Account SID + Auth Token).
 - Preserve tool naming and behavior stability; add new tools without silently breaking existing tool contracts.
-- For send operations, maintain preflight-first design (payload validation, template active checks, sender identity checks, attachment validation).
 - Keep API wrappers in `src/client.ts`; keep tool orchestration in `src/tools/*.ts`; avoid mixing transport/client logic into tool files.
-- When adding webhook features, support signed webhook verification paths and make receiver behavior observable through MCP tools.
 - Use strict TypeScript types for request/response payloads and normalize SendGrid error handling through shared client error types.
 - Update `MCP_TOOLS.md` whenever tool surface changes.
+- Keep Marketing Campaigns contact/list CRUD out of scope unless explicitly requested.
+- Keep reseller IP Provisioning (`/v3/partners/accounts/{accountID}/ips`) out of scope unless explicitly requested. Subusers are the non-reseller equivalent.
 
-## Documentation policy (source of truth)
+## Documentation policy
 
-- For any SendGrid API/tooling change, validate behavior against official docs first.
-- Primary references:
-  - `https://www.twilio.com/docs/sendgrid/for-developers.md`
-  - `https://www.twilio.com/docs/sendgrid/api-reference`
-  - `https://support.sendgrid.com/hc/en-us/sections/360006896333-Best-Practices`
-  - `https://support.sendgrid.com/hc/en-us/sections/360006896313-Delivery-Troubleshooting`
-- If code and docs diverge, prefer docs and align implementation (or document intentional deviation).
-- For new diagnostics tools, include a doc-driven rationale (which deliverability/troubleshooting case is being covered).
+Before copying any request or response shape, query the `twilio-docs` MCP (`https://mcp.twilio.com/docs`): `twilio__search`, then `twilio__retrieve`. It is public beta, read-only, and indexes current SendGrid OpenAPI, docs, and support articles. Do not paste endpoint shapes from memory or from a pasted URL.
+
+Scope searches to Twilio SendGrid. The same server also indexes Twilio Email (`comms.twilio.com`) and the rest of Twilio; those results are the wrong product.
+
+If the retrieved spec and live behavior disagree, follow live behavior and record the deviation in `MCP_TOOLS.md`. For a new diagnostics tool, name the case it covers (bounce, drop, deferral, spam placement, auth, SEQ).
+
+## Transport
+
+- HTTPS only. JSON body. `Authorization: Bearer <api key>`. Global users and non-EU subusers: `https://api.sendgrid.com`. EU regional subusers: `https://api.eu.sendgrid.com`.
+- `on-behalf-of` must use the subuser's regional host.
+- Parent-account stats queries against subusers do not work for regional subusers.
+- SEQ scores are currently wrong for EU subusers. Do not present them as authoritative there.
+- Some mail settings that bypass suppressions, and Marketing Campaign designs, are stored in the US even for EU senders. Surface that when touching those APIs.
+
+## Send contract
+
+Preflight before `POST /v3/mail/send`: payload, active template, sender identity, attachment size.
+
+- `202` with an empty body means queued, not delivered. Delivery is async (Event Webhook or Email Logs).
+- `mail_settings.sandbox_mode.enable=true` validates and returns `200`. It does not send.
+- `send_at` is Unix seconds, at most 72 hours ahead. Milliseconds are rejected. Cancel only a send that already has a batch id from `POST /v3/mail/batch`, via `POST /v3/user/scheduled_sends`.
+- At most 1000 recipients per request. At most 10 categories. Whole request at most 30MB. A `413` body is nginx HTML, not the JSON error envelope.
+- Dynamic template ids start with `d-`. Omit `content` when `template_id` is set; if both are present, the template wins and `content` is ignored. A personalization `subject` replaces the template subject. Missing Handlebars keys render as empty strings.
+- Recipients in the same `to` array of one personalization can see each other. Use one personalization per recipient for private sends.
+
+## Diagnostics
+
+Prefer SendGrid-side data over local guesses, in this order:
+
+1. Email Logs (`POST /v3/logs`, then `GET /v3/logs/{sg_message_id}`). All customers, 30-day retention, EU data stays on `api.eu.sendgrid.com`. Pull the current query grammar from `twilio-docs` before writing a filter.
+2. Event Webhook for realtime and for anything outside the 30-day log window.
+3. Suppressions when the outcome is `dropped` or `bounce`.
+4. Email Activity `GET /v3/messages` only for non-EU accounts that have the activity add-on. Unavailable for EU subusers. Confirm the current rate limit and filter cap via `twilio-docs`.
+5. Stats endpoints for aggregates only, not per-message truth.
+
+## Webhooks
+
+- Event POSTs are JSON arrays. Ack with 2xx. SendGrid retries non-2xx for up to 24 hours. Dedupe on `sg_event_id`.
+- Signed verification and OAuth 2.0 are independent and both off by default. Production receivers verify ECDSA P-256 over the raw body bytes plus `X-Twilio-Email-Event-Webhook-Timestamp`, using `X-Twilio-Email-Event-Webhook-Signature`. Re-serializing JSON breaks the signature.
+- OAuth token refresh: respond 4xx with body `invalid_request`, `invalid_token`, or `insufficient_scope`.
+- Do not call legacy v2 `eventnotify`; it overwrites webhook settings, including OAuth.
+- Multiple Event Webhook endpoints are supported. Make receiver behavior observable through MCP tools.
+- Treat bounce `reason` as untrusted. Do not use `open` events for critical logic; filter `sg_machine_open` before treating an open as human.
 
 ## Quick checklist for PR-sized changes
 
 - Added/changed tool has a clear description and schema.
-- New SendGrid endpoint support is implemented in `src/client.ts`.
+- New SendGrid endpoint support is implemented in `src/client.ts` from a `twilio-docs` retrieve, not from memory.
+- Regional host and EU limitations are handled or explicitly rejected.
 - Lints are clean; typecheck passes (or known external lib conflict is documented).
 - Docs updated in `MCP_TOOLS.md`.

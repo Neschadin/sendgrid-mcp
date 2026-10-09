@@ -1,4 +1,4 @@
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import type { SendGridClient } from '../client';
 import {
@@ -228,8 +228,8 @@ export function registerAccountTools(server: McpServer, client: SendGridClient) 
       inputSchema: z.object({
         confirmToken: ConfirmTokenSchema,
         nickname: z.string().min(1).max(100),
-        fromEmail: z.string().email().max(256),
-        replyTo: z.string().email().max(256),
+        fromEmail: z.email().max(256),
+        replyTo: z.email().max(256),
         fromName: z.string().max(256).optional(),
         replyToName: z.string().max(256).optional(),
         address: z.string().max(100).optional(),
@@ -427,7 +427,7 @@ export function registerAccountTools(server: McpServer, client: SendGridClient) 
       inputSchema: z.object({
         confirmToken: ConfirmTokenSchema,
         type: z.enum(['usage_limit', 'stats_notification']),
-        emailTo: z.string().email().optional(),
+        emailTo: z.email().optional(),
         frequency: z.enum(['daily', 'weekly', 'monthly']).optional(),
         percentage: z.number().int().min(1).max(100).optional(),
       }),
@@ -453,7 +453,7 @@ export function registerAccountTools(server: McpServer, client: SendGridClient) 
         confirmToken: ConfirmTokenSchema,
         id: z.number().int().positive(),
         type: z.enum(['usage_limit', 'stats_notification']).optional(),
-        emailTo: z.string().email().optional(),
+        emailTo: z.email().optional(),
         frequency: z.enum(['daily', 'weekly', 'monthly']).optional(),
         percentage: z.number().int().min(1).max(100).optional(),
       }),

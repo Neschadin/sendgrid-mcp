@@ -1,4 +1,4 @@
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import type {
   MailSettingName,
@@ -175,7 +175,7 @@ export function registerConsoleSettingsTools(
         confirmToken: ConfirmTokenSchema,
         setting: MailSettingNameSchema,
         settings: z
-          .record(SettingValueSchema)
+          .record(z.string(), SettingValueSchema)
           .describe(
             'Setting payload, e.g. { "enabled": true } or footer { "enabled", "html_content", "plain_content" }',
           ),
@@ -205,7 +205,7 @@ export function registerConsoleSettingsTools(
         confirmToken: ConfirmTokenSchema,
         setting: TrackingSettingNameSchema,
         settings: z
-          .record(SettingValueSchema)
+          .record(z.string(), SettingValueSchema)
           .describe(
             'Tracking payload, commonly { "enabled": true }. Open tracking may include substitution_tag.',
           ),
@@ -233,7 +233,7 @@ export function registerConsoleSettingsTools(
         'Create inbound parse setting. Hostname MX must point to SendGrid.',
       inputSchema: z.object({
         confirmToken: ConfirmTokenSchema,
-        url: z.string().url(),
+        url: z.url(),
         hostname: z.string().min(1),
         spamCheck: z.boolean().optional(),
         sendRaw: z.boolean().optional(),
@@ -263,7 +263,7 @@ export function registerConsoleSettingsTools(
       inputSchema: z.object({
         confirmToken: ConfirmTokenSchema,
         hostname: z.string().min(1),
-        url: z.string().url().optional(),
+        url: z.url().optional(),
         newHostname: z.string().min(1).optional(),
         spamCheck: z.boolean().optional(),
         sendRaw: z.boolean().optional(),

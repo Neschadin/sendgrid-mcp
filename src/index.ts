@@ -1,6 +1,9 @@
 #!/usr/bin/env bun
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { McpServer } from '@modelcontextprotocol/server';
+import {
+  serveStdio,
+  StdioServerTransport,
+} from '@modelcontextprotocol/server/stdio';
 import { version } from '../package.json';
 import { logError, logInfo, logWarn } from './logger';
 import { SendGridClient } from './client';
@@ -44,6 +47,27 @@ function getEnv(): {
   };
 }
 
+function buildServer(
+  client: SendGridClient,
+  fromEmail: string,
+  fromName: string,
+): McpServer {
+  const server = new McpServer({
+    name: 'sendgrid-mcp-server',
+    version,
+  });
+
+  registerTemplateTools(server, client);
+  registerEmailTools(server, client, fromEmail, fromName);
+  registerPreflightTools(server, client);
+  registerDiagnosticsTools(server, client);
+  registerSyncTools(server, client);
+  registerAccountTools(server, client);
+  registerConsoleSettingsTools(server, client);
+
+  return server;
+}
+
 async function main() {
   const env = getEnv();
   try {
@@ -53,34 +77,38 @@ async function main() {
   }
   const client = new SendGridClient(env.apiKey, env.apiBaseUrl);
 
-  const server = new McpServer({
-    name: 'sendgrid-mcp-server',
-    version,
-  });
-
-  registerTemplateTools(server, client);
-  registerEmailTools(server, client, env.fromEmail, env.fromName);
-  registerPreflightTools(server, client);
-  registerDiagnosticsTools(server, client);
-  registerSyncTools(server, client);
-  registerAccountTools(server, client);
-  registerConsoleSettingsTools(server, client);
-
+  // serveStdio owns onclose. Wrap close so the webhook listener (a keep-alive
+  // handle) is released when stdin ends or the process is signalled.
   const transport = new StdioServerTransport();
-  (transport as { onclose?: () => void }).onclose = () => {
-    logInfo('Transport closed');
-    stopWebhookReceiver();
+  const closeTransport = transport.close.bind(transport);
+  transport.close = async () => {
+    try {
+      await closeTransport();
+    } finally {
+      logInfo('Transport closed');
+      stopWebhookReceiver();
+    }
   };
+
+  const handle = serveStdio(
+    () => buildServer(client, env.fromEmail, env.fromName),
+    {
+      transport,
+      onerror: (error) => {
+        logError(`MCP transport error: ${error.message}`);
+      },
+    },
+  );
+
   let shuttingDown = false;
   const shutdown = async (signal: string) => {
     if (shuttingDown) return;
     shuttingDown = true;
     logInfo(`Shutdown requested (${signal})`);
-    stopWebhookReceiver();
     try {
-      await (transport as { close?: () => Promise<void> | void }).close?.();
-      await (server as { close?: () => Promise<void> | void }).close?.();
+      await handle.close();
     } finally {
+      stopWebhookReceiver();
       process.exit(0);
     }
   };
@@ -91,8 +119,6 @@ async function main() {
   process.on('SIGTERM', () => {
     void shutdown('SIGTERM');
   });
-
-  await server.connect(transport);
 
   logInfo('Server started');
 }

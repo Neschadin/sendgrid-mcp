@@ -1,4 +1,4 @@
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import {
   isSendGridApiError,
@@ -24,7 +24,7 @@ const MAX_CATEGORIES = 10;
 const MAX_SEND_AT_SECONDS_AHEAD = 72 * 60 * 60;
 
 const EmailAddressSchema = z.object({
-  email: z.string().email(),
+  email: z.email(),
   name: z.string().optional(),
 });
 
@@ -46,9 +46,9 @@ const PersonalizationSchema = z.object({
   cc: z.array(EmailAddressSchema).optional(),
   bcc: z.array(EmailAddressSchema).optional(),
   subject: z.string().optional(),
-  dynamicTemplateData: z.record(z.unknown()).optional(),
-  customArgs: z.record(z.string()).optional(),
-  headers: z.record(z.string()).optional(),
+  dynamicTemplateData: z.record(z.string(), z.unknown()).optional(),
+  customArgs: z.record(z.string(), z.string()).optional(),
+  headers: z.record(z.string(), z.string()).optional(),
   sendAt: z.number().int().optional(),
 });
 
@@ -66,14 +66,14 @@ export const SendRequestSchema = z.object({
   attachments: z.array(AttachmentSchema).optional(),
   templateId: z.string().optional(),
   categories: z.array(z.string()).optional(),
-  customArgs: z.record(z.string()).optional(),
-  headers: z.record(z.string()).optional(),
+  customArgs: z.record(z.string(), z.string()).optional(),
+  headers: z.record(z.string(), z.string()).optional(),
   sendAt: z.number().int().optional(),
   batchId: z.string().optional(),
   asm: AsmSchema.optional(),
   ipPoolName: z.string().optional(),
-  mailSettings: z.record(z.unknown()).optional(),
-  trackingSettings: z.record(z.unknown()).optional(),
+  mailSettings: z.record(z.string(), z.unknown()).optional(),
+  trackingSettings: z.record(z.string(), z.unknown()).optional(),
 });
 
 export type SendRequestInput = z.infer<typeof SendRequestSchema>;

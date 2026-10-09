@@ -1,4 +1,4 @@
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { isSendGridApiError, type SendGridClient } from '../client';
 import {
@@ -268,7 +268,7 @@ export function registerDiagnosticsTools(
         id: z.string().min(1),
         includeAccountStatusChange: z.boolean().optional(),
         enabled: z.boolean().optional(),
-        url: z.string().url().optional(),
+        url: z.url().optional(),
         accountStatusChange: z.boolean().optional(),
         groupResubscribe: z.boolean().optional(),
         delivered: z.boolean().optional(),
@@ -395,7 +395,7 @@ export function registerDiagnosticsTools(
       inputSchema: z.object({
         limit: z.number().int().min(1).max(5000).optional(),
         eventType: z.string().optional(),
-        email: z.string().email().optional(),
+        email: z.email().optional(),
         messageId: z.string().optional(),
         onlyVerified: z.boolean().optional(),
         offset: z.number().int().min(0).optional(),
@@ -527,8 +527,8 @@ export function registerDiagnosticsTools(
           'high_unsubscribes_or_spam',
           'deferrals_or_throttling',
         ]),
-        recipientEmail: z.string().email().optional(),
-        fromEmail: z.string().email().optional(),
+        recipientEmail: z.email().optional(),
+        fromEmail: z.email().optional(),
         templateId: z.string().optional(),
         messageId: z.string().optional(),
         activityQuery: z.string().optional(),
@@ -957,7 +957,7 @@ export function registerDiagnosticsTools(
         offset: z.number().int().min(0).optional(),
         startTime: z.number().int().optional(),
         endTime: z.number().int().optional(),
-        email: z.string().email().optional(),
+        email: z.email().optional(),
         response_format: ResponseFormatSchema.optional(),
       }),
       outputSchema: ListSuppressionsOutputSchema,
@@ -1006,11 +1006,11 @@ export function registerDiagnosticsTools(
       description:
         'Check if an email address is suppressed (bounce, block, global unsubscribe, spam report, or invalid email).',
       inputSchema: z.object({
-        email: z.string().email().describe('Email address to check'),
+        email: z.email().describe('Email address to check'),
         ...ReadInputFields,
       }),
       outputSchema: z.object({
-        email: z.string().email(),
+        email: z.email(),
         bounced: z.boolean(),
         blocked: z.boolean(),
         unsubscribed: z.boolean(),

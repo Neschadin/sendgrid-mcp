@@ -1,4 +1,4 @@
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import type { SendGridClient } from '../client';
 import {
@@ -24,7 +24,7 @@ export function registerEmailTools(
 ) {
   ensureSafeToolRegistration(server);
   const RecipientSchema = z.object({
-    email: z.string().email(),
+    email: z.email(),
     name: z.string().optional(),
   });
 
@@ -63,21 +63,21 @@ export function registerEmailTools(
       inputSchema: z.object({
         to: z.array(RecipientSchema).min(1),
         templateId: z.string().describe('Template ID, e.g. d-xxxxxxxxxxxxxxxx'),
-        dynamicTemplateData: z.record(z.unknown()),
+        dynamicTemplateData: z.record(z.string(), z.unknown()),
         subject: z.string().optional(),
         cc: z.array(RecipientSchema).optional(),
         bcc: z.array(RecipientSchema).optional(),
-        fromEmail: z.string().email().optional(),
+        fromEmail: z.email().optional(),
         fromName: z.string().optional(),
         replyTo: RecipientSchema.optional(),
         categories: z.array(z.string()).optional(),
-        customArgs: z.record(z.string()).optional(),
+        customArgs: z.record(z.string(), z.string()).optional(),
         sendAt: z.number().int().optional(),
         batchId: z.string().optional(),
         asmGroupId: z.number().int().optional(),
         asmGroupsToDisplay: z.array(z.number().int()).optional(),
-        mailSettings: z.record(z.unknown()).optional(),
-        trackingSettings: z.record(z.unknown()).optional(),
+        mailSettings: z.record(z.string(), z.unknown()).optional(),
+        trackingSettings: z.record(z.string(), z.unknown()).optional(),
       }),
     },
     async ({
@@ -339,18 +339,14 @@ export function registerEmailTools(
       description:
         'Send a test email using a template with mock data. Uses mail_settings.sandbox_mode by default (SendGrid accepts but does not deliver). Set liveDelivery=true with confirmToken="CONFIRM" for real delivery.',
       inputSchema: z.object({
-        to: z.string().email().describe('Recipient email for the test'),
+        to: z.email().describe('Recipient email for the test'),
         templateId: z.string().describe('Template ID, e.g. d-xxxxxxxxxxxxxxxx'),
         mockData: z
-          .record(z.unknown())
+          .record(z.string(), z.unknown())
           .describe(
             'Mock dynamic template data as JSON, e.g. {"customerName":"Test User","siteUrl":"https://example.com"}',
           ),
-        fromEmail: z
-          .string()
-          .email()
-          .optional()
-          .describe('Override sender email'),
+        fromEmail: z.email().optional().describe('Override sender email'),
         fromName: z.string().optional().describe('Override sender name'),
         liveDelivery: z
           .boolean()
