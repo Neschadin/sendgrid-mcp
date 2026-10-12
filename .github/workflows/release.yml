@@ -20,9 +20,50 @@ jobs:
   verify:
     uses: ./.github/workflows/ci.yml
 
+  github-release:
+    needs: verify
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "GitHub Release ${GITHUB_REF_NAME} already exists"
+            exit 0
+          fi
+          previous="$(git tag -l 'v*.*.*' --sort=-v:refname | awk -v current="$GITHUB_REF_NAME" '$0 != current { print; exit }')"
+          args=(
+            release create "$GITHUB_REF_NAME"
+            --repo "$GITHUB_REPOSITORY"
+            --verify-tag
+            --title "$GITHUB_REF_NAME"
+            --generate-notes
+            --fail-on-no-commits
+          )
+          if [[ -n "$previous" ]]; then
+            echo "release notes start at ${previous}"
+            args+=(--notes-start-tag "$previous")
+          fi
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            args+=(--prerelease --latest=false)
+          else
+            args+=(--latest)
+          fi
+          gh "${args[@]}"
+
   npm-publish:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: verify
+    needs: github-release
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -81,28 +122,33 @@ jobs:
         run: |
           curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
 
-      - name: Authenticate to MCP Registry
-        run: ./mcp-publisher login github-oidc
-
-      - name: Publish server to MCP Registry
+      - name: Wait for npm
         run: |
           TAG="${GITHUB_REF_NAME#v}"
           export TAG
           NPM_URL="https://registry.npmjs.org/@neschadin%2fsendgrid-mcp/${TAG}"
           ready=0
-          for i in $(seq 1 30); do
-            meta="$(curl -fsS "$NPM_URL" || true)"
-            if [[ -n "$meta" ]] && printf '%s' "$meta" | bun -e 'const j=await Bun.stdin.json(); process.exit(j.version===process.env.TAG&&j.mcpName==="io.github.Neschadin/sendgrid-mcp"?0:1)'; then
+          for i in $(seq 1 40); do
+            code="$(curl -sS -o meta.json -w '%{http_code}' "$NPM_URL" || true)"
+            if [[ "$code" == "200" ]] && bun -e 'const j=await Bun.file("meta.json").json(); process.exit(j.version===process.env.TAG&&j.mcpName==="io.github.Neschadin/sendgrid-mcp"?0:1)'; then
               ready=1
               break
             fi
-            echo "npm @neschadin/sendgrid-mcp@${TAG} not readable yet (${i}/30)"
+            echo "npm @neschadin/sendgrid-mcp@${TAG} not readable yet (${i}/40, HTTP ${code})"
             sleep 15
           done
           if [[ "$ready" -ne 1 ]]; then
             echo "timed out waiting for npm @neschadin/sendgrid-mcp@${TAG}" >&2
             exit 1
           fi
+
+      # github-oidc JWTs expire in about five minutes. Login after npm is readable.
+      - name: Authenticate to MCP Registry
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish server to MCP Registry
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
           URL="https://registry.modelcontextprotocol.io/v0.1/servers/io.github.Neschadin%2Fsendgrid-mcp/versions/${TAG}"
           code="$(curl -sS -o /dev/null -w '%{http_code}' "$URL")"
           if [[ "$code" == "200" ]]; then
@@ -110,49 +156,3 @@ jobs:
           else
             ./mcp-publisher publish
           fi
-
-  github-release:
-    needs: [npm-publish, mcp-registry]
-    if: >-
-      ${{
-        !cancelled() &&
-        startsWith(github.ref, 'refs/tags/v') &&
-        needs.npm-publish.result == 'success' &&
-        (needs.mcp-registry.result == 'success' || needs.mcp-registry.result == 'skipped')
-      }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Create GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "GitHub Release ${GITHUB_REF_NAME} already exists"
-            exit 0
-          fi
-          previous="$(git tag -l 'v*.*.*' --sort=-v:refname | awk -v current="$GITHUB_REF_NAME" '$0 != current { print; exit }')"
-          args=(
-            release create "$GITHUB_REF_NAME"
-            --repo "$GITHUB_REPOSITORY"
-            --verify-tag
-            --title "$GITHUB_REF_NAME"
-            --generate-notes
-            --fail-on-no-commits
-          )
-          if [[ -n "$previous" ]]; then
-            echo "release notes start at ${previous}"
-            args+=(--notes-start-tag "$previous")
-          fi
-          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
-            args+=(--prerelease --latest=false)
-          else
-            args+=(--latest)
-          fi
-          gh "${args[@]}"

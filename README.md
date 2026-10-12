@@ -148,7 +148,7 @@ Restart the client after changing MCP config.
 
 ## Development
 
-A git tag `vX.Y.Z` must match `version` in `package.json` and both version fields in `server.json`. That tag runs tests, publishes `@neschadin/sendgrid-mcp` to npm, publishes `io.github.Neschadin/sendgrid-mcp` to the MCP registry, then opens a GitHub Release. The release has no binary assets. A prerelease tag (`vX.Y.Z-...`) publishes to npm with the `next` dist-tag, skips the MCP registry, and is marked prerelease on GitHub.
+A git tag `vX.Y.Z` must match `version` in `package.json` and both version fields in `server.json`. That tag runs tests, opens the GitHub Release, publishes `@neschadin/sendgrid-mcp` to npm, then publishes `io.github.Neschadin/sendgrid-mcp` to the MCP registry. The release has no binary assets. A prerelease tag (`vX.Y.Z-...`) publishes to npm with the `next` dist-tag, skips the MCP registry, and is marked prerelease on GitHub.
 
 ```bash
 git clone https://github.com/Neschadin/sendgrid-mcp.git
