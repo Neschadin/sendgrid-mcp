@@ -1,6 +1,6 @@
 {
   "name": "@neschadin/sendgrid-mcp",
-  "version": "3.0.0",
+  "version": "3.0.3",
   "mcpName": "io.github.Neschadin/sendgrid-mcp",
   "description": "MCP server for Twilio SendGrid transactional email: preflight send, templates, delivery diagnostics, and console settings",
   "type": "module",
@@ -36,7 +36,7 @@
     "mcp.json.example"
   ],
   "engines": {
-    "bun": ">=1.4.2"
+    "bun": ">=1.4.3"
   },
   "publishConfig": {
     "access": "public",
@@ -50,15 +50,16 @@
     "typecheck": "tsc --noEmit",
     "lint": "oxlint",
     "smoke": "bun run scripts/smoke-register-tools.ts",
+    "check:release": "bun run scripts/check-release-metadata.ts",
     "test": "bun test tests",
     "prepack": "bun test && bun run typecheck"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.3.1",
-    "zod": "4.6.5"
+    "zod": "4.6.6"
   },
   "devDependencies": {
-    "@types/bun": "1.4.2",
+    "@types/bun": "1.4.3",
     "oxlint": "1.87.0",
     "typescript": "7.0.2"
   }

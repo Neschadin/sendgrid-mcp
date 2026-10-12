@@ -2,12 +2,9 @@ name: Release
 
 on:
   push:
-    branches:
-      - main
     tags:
       - 'v*.*.*'
       - 'v*.*.*-*'
-  pull_request:
 
 concurrency:
   group: release-${{ github.ref }}
@@ -17,51 +14,11 @@ permissions:
   contents: read
 
 env:
-  BUN_VERSION: '1.4.2'
+  BUN_VERSION: '1.4.3'
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Lint
-        run: bun run lint
-
-      - name: Unit tests
-        run: bun test
-
-      - name: Typecheck
-        run: bun run typecheck
-
-      - name: Smoke
-        run: bun run smoke
-
-      - name: Validate MCP registry metadata
-        run: |
-          bun -e '
-            const pkg = await Bun.file("package.json").json();
-            const server = await Bun.file("server.json").json();
-            const name = "io.github.Neschadin/sendgrid-mcp";
-            if (pkg.name !== "@neschadin/sendgrid-mcp") throw new Error(`package.json name: ${pkg.name}`);
-            if (pkg.mcpName !== name) throw new Error(`package.json mcpName: ${pkg.mcpName}`);
-            if (server.name !== name) throw new Error(`server.json name: ${server.name}`);
-            const entry = server.packages?.[0];
-            if (entry?.registryType !== "npm") throw new Error(`registryType: ${entry?.registryType}`);
-            if (entry?.identifier !== pkg.name) throw new Error(`identifier: ${entry?.identifier}`);
-            if (entry?.transport?.type !== "stdio") throw new Error(`transport: ${entry?.transport?.type}`);
-            if (entry?.runtimeHint !== "bunx") throw new Error(`runtimeHint: ${entry?.runtimeHint}`);
-            if (server.version !== pkg.version || entry?.version !== pkg.version) {
-              throw new Error(`version drift: package.json ${pkg.version}, server.json ${server.version}/${entry?.version}`);
-            }
-          '
+    uses: ./.github/workflows/ci.yml
 
   npm-publish:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -73,14 +30,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
-
-      - name: Validate release tag
-        run: |
-          TAG="${GITHUB_REF_NAME#v}"
-          if ! [[ "$TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
-            echo "Tag must be semver (vX.Y.Z): got ${GITHUB_REF_NAME}" >&2
-            exit 1
-          fi
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -95,12 +44,8 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Sync package version from tag
-        run: |
-          TAG="${GITHUB_REF_NAME#v}"
-          export TAG
-          bun -e "const p=await Bun.file('package.json').json(); p.version=process.env.TAG!; await Bun.write('package.json', JSON.stringify(p,null,2)+'\n')"
-          node -e "console.log('package.json version:', require('./package.json').version)"
+      - name: Validate release metadata
+        run: bun run check:release
 
       # Trusted Publishing (OIDC). Do not set NODE_AUTH_TOKEN or NPM_TOKEN.
       - name: Publish to npm
@@ -129,6 +74,9 @@ jobs:
         with:
           bun-version: ${{ env.BUN_VERSION }}
 
+      - name: Validate release metadata
+        run: bun run check:release
+
       - name: Install mcp-publisher
         run: |
           curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
@@ -136,20 +84,15 @@ jobs:
       - name: Authenticate to MCP Registry
         run: ./mcp-publisher login github-oidc
 
-      - name: Set server.json version from tag
-        run: |
-          TAG="${GITHUB_REF_NAME#v}"
-          export TAG
-          bun -e 'const s=await Bun.file("server.json").json(); s.version=process.env.TAG; s.packages[0].version=process.env.TAG; await Bun.write("server.json", JSON.stringify(s,null,2)+"\n")'
-
       - name: Publish server to MCP Registry
         run: |
           TAG="${GITHUB_REF_NAME#v}"
+          export TAG
           NPM_URL="https://registry.npmjs.org/@neschadin%2fsendgrid-mcp/${TAG}"
           ready=0
           for i in $(seq 1 30); do
             meta="$(curl -fsS "$NPM_URL" || true)"
-            if [[ -n "$meta" ]] && printf '%s' "$meta" | bun -e 'const j=await Bun.stdin.json(); process.exit(j.mcpName==="io.github.Neschadin/sendgrid-mcp"?0:1)'; then
+            if [[ -n "$meta" ]] && printf '%s' "$meta" | bun -e 'const j=await Bun.stdin.json(); process.exit(j.version===process.env.TAG&&j.mcpName==="io.github.Neschadin/sendgrid-mcp"?0:1)'; then
               ready=1
               break
             fi
@@ -167,3 +110,49 @@ jobs:
           else
             ./mcp-publisher publish
           fi
+
+  github-release:
+    needs: [npm-publish, mcp-registry]
+    if: >-
+      ${{
+        !cancelled() &&
+        startsWith(github.ref, 'refs/tags/v') &&
+        needs.npm-publish.result == 'success' &&
+        (needs.mcp-registry.result == 'success' || needs.mcp-registry.result == 'skipped')
+      }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "GitHub Release ${GITHUB_REF_NAME} already exists"
+            exit 0
+          fi
+          previous="$(git tag -l 'v*.*.*' --sort=-v:refname | awk -v current="$GITHUB_REF_NAME" '$0 != current { print; exit }')"
+          args=(
+            release create "$GITHUB_REF_NAME"
+            --repo "$GITHUB_REPOSITORY"
+            --verify-tag
+            --title "$GITHUB_REF_NAME"
+            --generate-notes
+            --fail-on-no-commits
+          )
+          if [[ -n "$previous" ]]; then
+            echo "release notes start at ${previous}"
+            args+=(--notes-start-tag "$previous")
+          fi
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            args+=(--prerelease --latest=false)
+          else
+            args+=(--latest)
+          fi
+          gh "${args[@]}"

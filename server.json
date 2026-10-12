@@ -7,12 +7,12 @@
     "url": "https://github.com/Neschadin/sendgrid-mcp",
     "source": "github"
   },
-  "version": "3.0.0",
+  "version": "3.0.3",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@neschadin/sendgrid-mcp",
-      "version": "3.0.0",
+      "version": "3.0.3",
       "runtimeHint": "bunx",
       "runtimeArguments": [
         {

@@ -21,7 +21,7 @@ This project is community-maintained and is not affiliated with, endorsed by, or
 
 ## Requirements
 
-- [Bun](https://bun.sh) ≥ 1.4.2
+- [Bun](https://bun.sh) ≥ 1.4.3
 - A [SendGrid API key](https://app.sendgrid.com/settings/api_keys) with scopes for the tools you call. Keys normally start with `SG.`; any other prefix only logs a warning
 - A verified sender address in `SENDGRID_FROM_EMAIL`
 - An MCP client (Cursor, Claude Desktop, VS Code, etc.)
@@ -148,7 +148,7 @@ Restart the client after changing MCP config.
 
 ## Development
 
-A git tag `vX.Y.Z` runs tests, publishes `@neschadin/sendgrid-mcp` to npm, then publishes `io.github.Neschadin/sendgrid-mcp` to the MCP registry. The release has no binary assets.
+A git tag `vX.Y.Z` must match `version` in `package.json` and both version fields in `server.json`. That tag runs tests, publishes `@neschadin/sendgrid-mcp` to npm, publishes `io.github.Neschadin/sendgrid-mcp` to the MCP registry, then opens a GitHub Release. The release has no binary assets. A prerelease tag (`vX.Y.Z-...`) publishes to npm with the `next` dist-tag, skips the MCP registry, and is marked prerelease on GitHub.
 
 ```bash
 git clone https://github.com/Neschadin/sendgrid-mcp.git
